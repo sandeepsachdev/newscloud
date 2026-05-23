@@ -273,6 +273,23 @@ public class TrendingTopicsService {
         this.newsService = newsService;
     }
 
+    /**
+     * Per-phrase tracking: which articles contain the phrase, and which of those
+     * have it in the title. weight() gives titles an effective ×2 boost since a
+     * title hit lands in both sets while a description-only hit lands in one.
+     */
+    private static final class PhraseStats {
+        final Set<Integer> articles = new HashSet<>();
+        final Set<Integer> titleArticles = new HashSet<>();
+
+        int weight() { return articles.size() + titleArticles.size(); }
+
+        void absorb(PhraseStats other) {
+            articles.addAll(other.articles);
+            titleArticles.addAll(other.titleArticles);
+        }
+    }
+
     // Polls every 30s: runs immediately once articles are available, then throttles to ~15 min
     @Scheduled(initialDelay = 15_000, fixedDelay = 30_000)
     public void computeTrendingTopics() {
@@ -303,30 +320,16 @@ public class TrendingTopicsService {
             properNouns.stream().sorted().limit(40).collect(Collectors.toList()));
 
         // ── Step 2: Extract n-grams with document frequency ─────────────────────
-        Map<String, Set<Integer>> phraseMap = new HashMap<>();
+        // Title and description are tokenised separately so n-grams never span the
+        // boundary between them (otherwise titles like "Inside Science: …" would
+        // produce phantom trigrams like "science inside science"). Title hits
+        // count toward an extra weight so headlines still outrank body copy.
+        Map<String, PhraseStats> phraseMap = new HashMap<>();
 
         for (int idx = 0; idx < articles.size(); idx++) {
             Article article = articles.get(idx);
-            // Titles are more signal-rich — include them twice
-            String text = clean(article.title() + " " + article.title() + " " + article.description());
-            List<String> tokens = tokenize(text);
-            Set<String> seen = new HashSet<>();
-
-            for (int i = 0; i < tokens.size(); i++) {
-                String t0 = tokens.get(i);
-                if (seen.add(t0)) phraseMap.computeIfAbsent(t0, k -> new HashSet<>()).add(idx);
-
-                if (i + 1 < tokens.size()) {
-                    String t1 = tokens.get(i + 1);
-                    String bi = t0 + " " + t1;
-                    if (seen.add(bi)) phraseMap.computeIfAbsent(bi, k -> new HashSet<>()).add(idx);
-
-                    if (i + 2 < tokens.size()) {
-                        String tri = t0 + " " + t1 + " " + tokens.get(i + 2);
-                        if (seen.add(tri)) phraseMap.computeIfAbsent(tri, k -> new HashSet<>()).add(idx);
-                    }
-                }
-            }
+            extractNgrams(article.title(), idx, true, phraseMap);
+            extractNgrams(article.description(), idx, false, phraseMap);
         }
 
         // ── Step 3: Three-gate filter ────────────────────────────────────────────
@@ -334,7 +337,7 @@ public class TrendingTopicsService {
 
         phraseMap.entrySet().removeIf(e -> {
             String phrase = e.getKey();
-            int freq = e.getValue().size();
+            int freq = e.getValue().articles.size();
             String[] words = phrase.split(" ");
             int wc = words.length;
 
@@ -361,35 +364,66 @@ public class TrendingTopicsService {
         });
 
         // ── Step 4: Absorb shorter phrases subsumed by longer ones ───────────────
-        Map<String, Set<Integer>> absorbed = absorbIntoMultiWord(phraseMap);
+        Map<String, PhraseStats> absorbed = absorbIntoMultiWord(phraseMap);
 
         // ── Step 5: Merge phrases that share ≥2 words (e.g. "Gaza Ceasefire Talks"
         //            and "Gaza Ceasefire Deal" → keep the more frequent) ──────────
-        Map<String, Set<Integer>> merged = mergeByWordOverlap(absorbed);
+        Map<String, PhraseStats> merged = mergeByWordOverlap(absorbed);
 
         // ── Step 6: Deduplicate by proper noun — if the same proper noun drives
         //            multiple topics (e.g. "Tulsi Gabbard" + "Tulsi Hearing"),
         //            keep only the most frequent ──────────────────────────────────
-        Map<String, Set<Integer>> deduped = deduplicateByProperNoun(merged, properNouns);
+        Map<String, PhraseStats> deduped = deduplicateByProperNoun(merged, properNouns);
 
         // ── Step 7: Build & sort ──────────────────────────────────────────────────
         List<TrendingTopic> topics = deduped.entrySet().stream()
-            .sorted((a, b) -> b.getValue().size() - a.getValue().size())
+            .sorted((a, b) -> b.getValue().weight() - a.getValue().weight())
             .limit(MAX_TOPICS)
             .map(e -> {
                 String phrase = toTitleCase(e.getKey());
-                List<Article> topicArticles = e.getValue().stream()
+                PhraseStats stats = e.getValue();
+                List<Article> topicArticles = stats.articles.stream()
                     .sorted(Comparator.reverseOrder())
                     .limit(MAX_ARTICLES_PER_TOPIC)
                     .map(articles::get)
                     .collect(Collectors.toList());
-                return new TrendingTopic(phrase, e.getValue().size(), topicArticles);
+                return new TrendingTopic(phrase, stats.articles.size(), topicArticles);
             })
             .collect(Collectors.toList());
 
         cachedTopics = Collections.unmodifiableList(topics);
         lastComputedAt = Instant.now();
         log.info("Computed {} trending topics", topics.size());
+    }
+
+    private void extractNgrams(String rawText, int idx, boolean fromTitle,
+                               Map<String, PhraseStats> phraseMap) {
+        if (rawText == null || rawText.isBlank()) return;
+        List<String> tokens = tokenize(clean(rawText));
+        Set<String> seen = new HashSet<>();
+
+        for (int i = 0; i < tokens.size(); i++) {
+            String t0 = tokens.get(i);
+            if (seen.add(t0)) recordPhrase(phraseMap, t0, idx, fromTitle);
+
+            if (i + 1 < tokens.size()) {
+                String t1 = tokens.get(i + 1);
+                String bi = t0 + " " + t1;
+                if (seen.add(bi)) recordPhrase(phraseMap, bi, idx, fromTitle);
+
+                if (i + 2 < tokens.size()) {
+                    String tri = t0 + " " + t1 + " " + tokens.get(i + 2);
+                    if (seen.add(tri)) recordPhrase(phraseMap, tri, idx, fromTitle);
+                }
+            }
+        }
+    }
+
+    private void recordPhrase(Map<String, PhraseStats> phraseMap, String phrase,
+                              int idx, boolean fromTitle) {
+        PhraseStats stats = phraseMap.computeIfAbsent(phrase, k -> new PhraseStats());
+        stats.articles.add(idx);
+        if (fromTitle) stats.titleArticles.add(idx);
     }
 
     // ── Proper-noun helpers ────────────────────────────────────────────────────
@@ -437,14 +471,14 @@ public class TrendingTopicsService {
 
     // ── Phrase helpers ─────────────────────────────────────────────────────────
 
-    private Map<String, Set<Integer>> absorbIntoMultiWord(Map<String, Set<Integer>> phraseMap) {
+    private Map<String, PhraseStats> absorbIntoMultiWord(Map<String, PhraseStats> phraseMap) {
         List<String> phrases = new ArrayList<>(phraseMap.keySet());
         Set<String> toAbsorb = new HashSet<>();
 
         for (int i = 0; i < phrases.size(); i++) {
             String shorter = phrases.get(i);
             String[] sw = shorter.split(" ");
-            int shorterFreq = phraseMap.get(shorter).size();
+            int shorterFreq = phraseMap.get(shorter).articles.size();
 
             if (sw.length == 1) {
                 // If this unigram appears inside ANY surviving multi-word phrase, absorb it.
@@ -471,7 +505,7 @@ public class TrendingTopicsService {
                     if (lw.length <= sw.length) continue;
                     if (!isSubphrase(sw, lw)) continue;
 
-                    int longerFreq = phraseMap.get(longer).size();
+                    int longerFreq = phraseMap.get(longer).articles.size();
                     if ((double) longerFreq / shorterFreq >= MERGE_THRESHOLD) {
                         toAbsorb.add(shorter);
                         break;
@@ -480,27 +514,28 @@ public class TrendingTopicsService {
             }
         }
 
-        Map<String, Set<Integer>> result = new HashMap<>(phraseMap);
+        Map<String, PhraseStats> result = new HashMap<>(phraseMap);
         toAbsorb.forEach(result::remove);
         return result;
     }
 
-    private Map<String, Set<Integer>> deduplicateByProperNoun(
-            Map<String, Set<Integer>> phraseMap, Set<String> properNouns) {
+    private Map<String, PhraseStats> deduplicateByProperNoun(
+            Map<String, PhraseStats> phraseMap, Set<String> properNouns) {
 
-        // Sort phrases by frequency desc — we always keep the most frequent one
+        // Sort phrases by weight desc — we always keep the most frequent one
         List<String> phrases = phraseMap.entrySet().stream()
-            .sorted((a, b) -> b.getValue().size() - a.getValue().size())
+            .sorted((a, b) -> b.getValue().weight() - a.getValue().weight())
             .map(Map.Entry::getKey)
             .collect(Collectors.toList());
 
-        Map<String, Set<Integer>> result = new LinkedHashMap<>();
+        Map<String, PhraseStats> result = new LinkedHashMap<>();
         Set<String> consumed = new HashSet<>();
 
         for (String phrase : phrases) {
             if (consumed.contains(phrase)) continue;
 
-            Set<Integer> articles = new HashSet<>(phraseMap.get(phrase));
+            PhraseStats combined = new PhraseStats();
+            combined.absorb(phraseMap.get(phrase));
             String[] words = phrase.split(" ");
             List<String> members = new ArrayList<>();
             members.add(phrase);
@@ -512,26 +547,26 @@ public class TrendingTopicsService {
                 for (String other : phrases) {
                     if (other.equals(phrase) || consumed.contains(other)) continue;
                     if (Arrays.asList(other.split(" ")).contains(word)) {
-                        articles.addAll(phraseMap.get(other));
+                        combined.absorb(phraseMap.get(other));
                         consumed.add(other);
                         members.add(other);
                     }
                 }
             }
 
-            result.put(pickConsolidatedName(members), articles);
+            result.put(pickConsolidatedName(members), combined);
         }
         return result;
     }
 
-    private Map<String, Set<Integer>> mergeByWordOverlap(Map<String, Set<Integer>> phraseMap) {
-        // Sort phrases by frequency desc so we always keep the more frequent one
+    private Map<String, PhraseStats> mergeByWordOverlap(Map<String, PhraseStats> phraseMap) {
+        // Sort phrases by weight desc so we always keep the more frequent one
         List<String> phrases = phraseMap.entrySet().stream()
-            .sorted((a, b) -> b.getValue().size() - a.getValue().size())
+            .sorted((a, b) -> b.getValue().weight() - a.getValue().weight())
             .map(Map.Entry::getKey)
             .collect(Collectors.toList());
 
-        Map<String, Set<Integer>> result = new LinkedHashMap<>();
+        Map<String, PhraseStats> result = new LinkedHashMap<>();
         Set<String> consumed = new HashSet<>();
 
         for (String p1 : phrases) {
@@ -546,7 +581,8 @@ public class TrendingTopicsService {
             }
 
             Set<String> w1 = new HashSet<>(Arrays.asList(p1Words));
-            Set<Integer> articles = new HashSet<>(phraseMap.get(p1));
+            PhraseStats combined = new PhraseStats();
+            combined.absorb(phraseMap.get(p1));
             List<String> members = new ArrayList<>();
             members.add(p1);
 
@@ -557,13 +593,13 @@ public class TrendingTopicsService {
                 Set<String> w2 = new HashSet<>(Arrays.asList(p2Words));
                 long shared = w1.stream().filter(w2::contains).count();
                 if (shared >= 2) {
-                    articles.addAll(phraseMap.get(p2));
+                    combined.absorb(phraseMap.get(p2));
                     consumed.add(p2);
                     members.add(p2);
                 }
             }
 
-            result.put(pickConsolidatedName(members), articles);
+            result.put(pickConsolidatedName(members), combined);
         }
         return result;
     }
