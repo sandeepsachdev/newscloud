@@ -284,6 +284,7 @@ let modal           = null;
 let lastRefreshAt   = null;
 let lastRefreshTimer = null;
 let buildTimestamp  = null;
+let drawnTopicCount = 0;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -316,8 +317,10 @@ async function fetchTopics() {
     hideOverlay();
 
     if (topics.length > 0) {
+      // Status badge + topic count are updated when wordcloud2.js finishes
+      // drawing (see onStop in renderCloud) so they reflect words actually
+      // painted, not just the candidate pool.
       renderCloud(shapeIdx);
-      setStatus(`${topics.length} trending topics`, 'live');
       lastRefreshAt = Date.now();
       renderLastRefreshed();
       schedulePoll(POLL_LIVE_MS);
@@ -359,6 +362,22 @@ function renderCloud(sIdx) {
     const size   = Math.round(minSz + ratio * (maxSz - minSz));
     return [t.phrase, size];
   });
+
+  let attemptDrawn = 0;
+  const onDrawn = (ev) => {
+    // wordcloud2.js fires this for each placement attempt; detail.drawn is
+    // true when the word was actually painted (it fits and is in-bound).
+    if (ev && ev.detail && ev.detail.drawn) attemptDrawn++;
+  };
+  const onStop = () => {
+    canvas.removeEventListener('wordclouddrawn', onDrawn);
+    canvas.removeEventListener('wordcloudstop', onStop);
+    drawnTopicCount = attemptDrawn;
+    setStatus(`${drawnTopicCount} trending topics`, 'live');
+    renderLastRefreshed();
+  };
+  canvas.addEventListener('wordclouddrawn', onDrawn);
+  canvas.addEventListener('wordcloudstop', onStop);
 
   WordCloud(canvas, {
     list:          wordList,
@@ -522,8 +541,8 @@ function renderLastRefreshed() {
   }
   el.classList.remove('hidden');
   const parts = [`Last refreshed: ${refreshedAgo(lastRefreshAt)}`];
-  if (allTopics.length > 0) {
-    parts.push(`${allTopics.length} topics`);
+  if (drawnTopicCount > 0) {
+    parts.push(`${drawnTopicCount} topics`);
   }
   if (buildTimestamp) {
     parts.push(`built ${formatBuildTimestamp(buildTimestamp)}`);
@@ -534,10 +553,14 @@ function renderLastRefreshed() {
 function formatBuildTimestamp(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric',
-    hour: 'numeric', minute: '2-digit'
+  // "May 23, 2026 at 9:50 PM"
+  const datePart = d.toLocaleDateString(undefined, {
+    year: 'numeric', month: 'long', day: 'numeric'
   });
+  const timePart = d.toLocaleTimeString(undefined, {
+    hour: 'numeric', minute: '2-digit', hour12: true
+  });
+  return `${datePart} at ${timePart}`;
 }
 
 function refreshedAgo(ts) {

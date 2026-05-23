@@ -325,8 +325,8 @@ public class TrendingTopicsService {
     // Polls every 30s: runs immediately once articles are available, then throttles to ~15 min
     @Scheduled(initialDelay = 15_000, fixedDelay = 30_000)
     public void computeTrendingTopics() {
-        List<Article> articles = newsService.getArticles();
-        if (articles.isEmpty()) {
+        List<Article> allArticles = newsService.getArticles();
+        if (allArticles.isEmpty()) {
             log.info("No articles available yet, will retry");
             return;
         }
@@ -335,8 +335,20 @@ public class TrendingTopicsService {
             return;
         }
 
+        // Only consider articles published within the last 24 hours. Articles
+        // without a known publish date are skipped — we can't honour the
+        // window if the feed didn't tell us when it ran.
+        Instant cutoff = Instant.now().minus(Duration.ofHours(24));
+        List<Article> articles = allArticles.stream()
+                .filter(a -> a.publishedAt() != null && a.publishedAt().isAfter(cutoff))
+                .collect(Collectors.toList());
+        if (articles.isEmpty()) {
+            log.info("No articles in the last 24h ({} total), skipping compute", allArticles.size());
+            return;
+        }
+
         int total = articles.size();
-        log.info("Computing trending topics from {} articles", total);
+        log.info("Computing trending topics from {} articles in the last 24h ({} total)", total, allArticles.size());
 
         // ── Step 1: Detect proper nouns via mid-sentence capitalisation in descriptions
         // Descriptions are written in sentence-case, so only real proper nouns stay
