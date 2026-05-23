@@ -100,6 +100,8 @@ public class TrendingTopicsService {
         "north", "south", "east", "west", "northern", "southern", "eastern", "western",
         // News source names that bleed into descriptions
         "guardian", "bbc", "cnn", "npr", "reuters", "skynews",
+        // Excluded individuals / companies / overly generic
+        "trump", "donald", "google", "air",
         // Numbers as words
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
         "nine", "ten", "hundred", "thousand", "million", "billion",
@@ -347,24 +349,25 @@ public class TrendingTopicsService {
     // ── Phrase helpers ─────────────────────────────────────────────────────────
 
     private Map<String, Set<Integer>> absorbIntoMultiWord(Map<String, Set<Integer>> phraseMap) {
-        Set<String> multiWord = phraseMap.keySet().stream()
-            .filter(p -> p.contains(" "))
-            .collect(Collectors.toSet());
-
+        List<String> phrases = new ArrayList<>(phraseMap.keySet());
         Set<String> toAbsorb = new HashSet<>();
 
-        for (String uni : new ArrayList<>(phraseMap.keySet())) {
-            if (uni.contains(" ")) continue;
-            int uniFreq = phraseMap.get(uni).size();
+        for (int i = 0; i < phrases.size(); i++) {
+            String shorter = phrases.get(i);
+            String[] sw = shorter.split(" ");
+            int shorterFreq = phraseMap.get(shorter).size();
 
-            for (String multi : multiWord) {
-                boolean wordInPhrase = Arrays.asList(multi.split(" ")).contains(uni);
-                if (wordInPhrase) {
-                    int multiFreq = phraseMap.get(multi).size();
-                    if ((double) multiFreq / uniFreq >= MERGE_THRESHOLD) {
-                        toAbsorb.add(uni);
-                        break;
-                    }
+            for (int j = 0; j < phrases.size(); j++) {
+                if (i == j) continue;
+                String longer = phrases.get(j);
+                String[] lw = longer.split(" ");
+                if (lw.length <= sw.length) continue;
+                if (!isSubphrase(sw, lw)) continue;
+
+                int longerFreq = phraseMap.get(longer).size();
+                if ((double) longerFreq / shorterFreq >= MERGE_THRESHOLD) {
+                    toAbsorb.add(shorter);
+                    break;
                 }
             }
         }
@@ -372,6 +375,17 @@ public class TrendingTopicsService {
         Map<String, Set<Integer>> result = new HashMap<>(phraseMap);
         toAbsorb.forEach(result::remove);
         return result;
+    }
+
+    private boolean isSubphrase(String[] shorter, String[] longer) {
+        outer:
+        for (int i = 0; i <= longer.length - shorter.length; i++) {
+            for (int j = 0; j < shorter.length; j++) {
+                if (!longer[i + j].equals(shorter[j])) continue outer;
+            }
+            return true;
+        }
+        return false;
     }
 
     private String clean(String text) {

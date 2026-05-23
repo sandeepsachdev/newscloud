@@ -25,11 +25,16 @@ public class NewsService {
     private static final Logger log = LoggerFactory.getLogger(NewsService.class);
 
     private static final List<String> FEED_URLS = List.of(
+        // BBC
         "https://feeds.bbci.co.uk/news/world/rss.xml",
         "https://feeds.bbci.co.uk/news/technology/rss.xml",
         "https://feeds.bbci.co.uk/news/business/rss.xml",
+        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        // US
         "https://feeds.nbcnews.com/nbcnews/public/news",
         "https://www.cbsnews.com/latest/rss/main",
+        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+        // Europe & international
         "https://www.euronews.com/rss?level=theme&name=news",
         "https://www.aljazeera.com/xml/rss/all.xml",
         "https://www.theguardian.com/world/rss",
@@ -38,8 +43,14 @@ public class NewsService {
         "https://feeds.skynews.com/feeds/rss/world.xml",
         "https://rss.dw.com/xml/rss-en-world",
         "https://www.france24.com/en/rss",
+        "https://time.com/feed/",
+        "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+        // Australia
         "https://www.abc.net.au/news/feed/51120/rss.xml",
-        "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
+        "https://www.abc.net.au/news/feed/1948/rss.xml",
+        "https://www.sbs.com.au/news/feed",
+        "https://www.smh.com.au/rss/feed.xml",
+        "https://www.theguardian.com/australia-news/rss"
     );
 
     private final CopyOnWriteArrayList<Article> articles = new CopyOnWriteArrayList<>();
@@ -98,6 +109,7 @@ public class NewsService {
                     description = entry.getContents().get(0).getValue();
                 }
                 description = description.replaceAll("<[^>]*>", " ")
+                                         .replaceAll("(?i)catch up with the most important stories[^.]*\\.", "")
                                          .replaceAll("\\s+", " ")
                                          .trim();
 
