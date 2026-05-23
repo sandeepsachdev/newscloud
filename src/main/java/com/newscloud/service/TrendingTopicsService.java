@@ -437,7 +437,11 @@ public class TrendingTopicsService {
 
         cachedTopics = Collections.unmodifiableList(topics);
         lastComputedAt = Instant.now();
-        log.info("Computed {} trending topics", topics.size());
+        log.info("Computed {} trending topics (highest → lowest):", topics.size());
+        for (int i = 0; i < topics.size(); i++) {
+            TrendingTopic t = topics.get(i);
+            log.info("  {}. {} ({})", i + 1, t.phrase(), t.frequency());
+        }
     }
 
     private void extractNgrams(String rawText, int idx, boolean fromTitle,
