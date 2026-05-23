@@ -28,7 +28,7 @@ public class TrendingTopicsService {
      * Single words are ONLY allowed if they are identified as proper nouns.
      * Generic single words ("tech", "health", "company") are never trending topics.
      */
-    private static final int MIN_FREQ_UNIGRAM_PROPER = 3;
+    private static final int MIN_FREQ_UNIGRAM_PROPER = 4;
     /** Bigrams where ≥1 word is a known proper noun */
     private static final int MIN_FREQ_BIGRAM_PROPER = 2;
     /** Bigrams with no proper nouns (e.g. "climate change") need more signal */
@@ -41,9 +41,9 @@ public class TrendingTopicsService {
 
     // Proper-noun detection thresholds
     /** Minimum mid-sentence appearances in descriptions before classifying */
-    private static final int PN_MIN_SAMPLES = 1;
+    private static final int PN_MIN_SAMPLES = 2;
     /** Fraction that must be capitalised mid-sentence for word → proper noun */
-    private static final double PN_CAP_RATE = 0.60;
+    private static final double PN_CAP_RATE = 0.75;
 
     private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
         // Articles & determiners
@@ -100,9 +100,20 @@ public class TrendingTopicsService {
         // Cardinal directions (only meaningful as part of compound proper nouns)
         "north", "south", "east", "west", "northern", "southern", "eastern", "western",
         // News source names that bleed into descriptions
-        "guardian", "bbc", "cnn", "npr", "reuters", "skynews",
-        // Excluded individuals / companies / overly generic
-        "trump", "donald", "google", "air",
+        "guardian", "bbc", "cnn", "cbs", "nbc", "npr", "reuters", "skynews", "euronews",
+        // Overly generic media/tech terms
+        "social", "media", "platform", "platforms", "online", "digital", "tech",
+        // Excluded individuals / companies
+        "trump", "donald", "google",
+        // Generic nouns that add no topic signal in any context
+        "air", "man", "men", "woman", "women", "person",
+        "side", "part", "parts", "kind", "type", "form",
+        "point", "points", "level", "levels",
+        "number", "numbers", "amount", "amounts", "rate", "rates",
+        "fact", "matter", "matters", "problem", "problems",
+        "question", "questions", "result", "results", "impact", "role",
+        "step", "steps", "decision", "decisions", "action", "actions",
+        "effort", "efforts", "claim", "claims",
         // Numbers as words
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
         "nine", "ten", "hundred", "thousand", "million", "billion",
@@ -125,6 +136,7 @@ public class TrendingTopicsService {
         "australia", "australian", "australians",
         "canada", "canadian", "canadians",
         "britain", "british", "england", "english", "scotland", "scottish", "wales", "welsh",
+        "newzealand", "zealand",
         // Western Europe
         "france", "french",
         "germany", "german", "germanys",
@@ -145,6 +157,7 @@ public class TrendingTopicsService {
         "hungary", "hungarian",
         "romania", "romanian",
         "czechia", "czech",
+        "turkey", "turkish",
         // Asia-Pacific
         "japan", "japanese",
         "india", "indian", "indians",
@@ -156,7 +169,9 @@ public class TrendingTopicsService {
         "thailand", "thai",
         "malaysia", "malaysian",
         "singapore", "singaporean",
-        "newzealand",
+        "myanmar", "burmese",
+        "korea", "korean",
+        "taiwan", "taiwanese",
         // Americas
         "brazil", "brazilian",
         "mexico", "mexican",
@@ -164,6 +179,9 @@ public class TrendingTopicsService {
         "colombia", "colombian",
         "chile", "chilean",
         "peru", "peruvian",
+        "cuba", "cuban",
+        "venezuela", "venezuelan",
+        "haiti", "haitian",
         // Africa / Middle East
         "nigeria", "nigerian",
         "kenya", "kenyan",
@@ -173,18 +191,39 @@ public class TrendingTopicsService {
         "morocco", "moroccan",
         "ghana", "ghanaian",
         "tanzania", "tanzanian",
+        "sudan", "sudanese",
+        "somalia", "somali",
+        "libya", "libyan",
         "saudi", "emirati",
         "jordan", "jordanian",
         "qatar", "qatari",
-        // Broad regions (too vague as standalone topics)
+        "lebanon", "lebanese",
+        "yemen", "yemeni",
+        "iraq", "iraqi",
+        "syria", "syrian",
+        "afghanistan", "afghan",
+        // Broad regions
         "europe", "european",
         "africa", "african",
         "asia", "asian",
         "americas", "latin",
-        "middle",
-        // Generic nationalities used as adjectives
-        "american", "american",
-        "western", "eastern"
+        "middle", "american", "western", "eastern",
+        // Generic structural/political words — blocked as unigrams,
+        // still allowed in bigrams/trigrams (e.g. "Hyde Park", "Supreme Court", "Trade War")
+        "park", "house", "court", "hall", "square", "center", "centre",
+        "bridge", "tower", "island", "city", "town", "port", "bay", "lake",
+        "street", "road", "avenue", "station", "district", "region", "province",
+        "party", "union", "council", "assembly", "parliament", "senate", "congress",
+        "bank", "fund", "market", "markets",
+        "war", "wars", "force", "forces", "crisis", "conflict",
+        // Generic nouns useful in bigrams ("Climate Change", "Terror Attack", "Foreign Policy")
+        // but too vague as standalone topics
+        "change", "changes", "attack", "attacks",
+        "deal", "deals", "plan", "plans",
+        "policy", "policies", "law", "laws",
+        "case", "cases", "issue", "issues",
+        "leader", "leaders", "member", "members",
+        "move", "moves", "area", "areas", "place", "places"
     ));
 
     private final NewsService newsService;
@@ -414,10 +453,6 @@ public class TrendingTopicsService {
     }
 
     public List<TrendingTopic> getTrendingTopics() {
-        List<TrendingTopic> pool = cachedTopics;
-        if (pool.size() <= SERVE_TOPICS) return pool;
-        List<TrendingTopic> copy = new ArrayList<>(pool);
-        Collections.shuffle(copy);
-        return copy.subList(0, SERVE_TOPICS);
+        return cachedTopics; // sorted by frequency desc; frontend shuffles render order for variety
     }
 }
