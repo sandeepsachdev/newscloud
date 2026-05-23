@@ -12,6 +12,7 @@ A Spring Boot application that aggregates world news from multiple RSS feeds, ex
 - Layout shuffled on every render for visual variety
 - Click any word to see a modal with articles sourced from that topic
 - Click any article to open it in a new tab
+- "Last refreshed" indicator updates in the corner of the page
 - Mobile-responsive dark UI
 - Single-command Docker deploy
 
@@ -149,6 +150,44 @@ john still appearing. Tom still appearing instead of tom hanks. Perhaps exclude 
 text is not appearing properly until browser is manually refreshed once
 ```
 
+### 21 — Last refreshed timestamp
+
+```
+show the last refreshed time on the page
+```
+
+### 22 — Consolidated topic naming
+
+```
+when topics get merged the label sometimes looks wrong — prefer the
+shortest multi-word member rather than the most-frequent one, and
+don't let single-word topics swallow longer ones
+```
+
+### 23 — Per-field n-gram extraction
+
+```
+n-grams are being formed across the boundary between an article's
+title and its description — extract from each field separately
+```
+
+### 24 — Run-based tokenizer
+
+```
+bigrams are getting counted across stopwords (e.g. "Trump said
+Putin" is producing "Trump Putin"). Only form n-grams from
+contiguous runs of real words, broken on punctuation and on any
+filtered word.
+```
+
+### 25 — Geographic features and city filtering
+
+```
+too many topics are just geographic features ("Sea", "Ocean",
+"River") or major city names that are background context, not
+actually the news topic
+```
+
 ---
 
 ## Running Locally
@@ -192,14 +231,15 @@ Dockerfile                             # multi-stage Maven → JRE build
 ## Trending Topic Algorithm
 
 1. **RSS fetch** — 22 feeds polled every 30 minutes via Rome library
-2. **N-gram extraction** — unigrams, bigrams, trigrams scored by document frequency (article titles weighted 2×)
-3. **Proper noun filter** — unigrams only qualify if capitalised mid-sentence in descriptions at ≥ 75% rate with ≥ 2 samples
-4. **First name filter** — ~200 common first names blocked as standalone topics (still appear in bigrams like "Tom Hanks")
-5. **Generic places filter** — countries, regions, structural words (park, court, war…) blocked as unigrams
-6. **IDF cutoff** — phrases present in > 25% of all articles are too generic and removed
-7. **Subphrase merge** — shorter phrases that are consecutive subsets of longer ones are absorbed
-8. **Word-overlap merge** — phrases sharing ≥ 2 words are collapsed into the most frequent representative
-9. **Stop words** — 200+ words covering articles, prepositions, auxiliaries, common news verbs, source names, and RSS boilerplate
+2. **Per-field, run-based tokenization** — title and description are tokenized separately; n-grams are only formed from contiguous runs of real words, with runs broken at punctuation and at any stop / filtered word so phrases never span across them
+3. **N-gram extraction** — unigrams, bigrams, trigrams scored by document frequency (article titles weighted 2×)
+4. **Proper noun filter** — unigrams only qualify if capitalised mid-sentence in descriptions at ≥ 75% rate with ≥ 2 samples
+5. **First name filter** — ~200 common first names blocked as standalone topics (still appear in bigrams like "Tom Hanks")
+6. **Generic places filter** — countries, regions, structural words (park, court, war…), geographic features (sea, ocean, river, mountain…) and major world cities blocked as unigrams; all still allowed inside multi-word phrases ("South China Sea", "Tokyo Olympics")
+7. **IDF cutoff** — phrases present in > 25% of all articles are too generic and removed
+8. **Subphrase merge** — shorter phrases that are consecutive subsets of longer ones are absorbed
+9. **Word-overlap merge** — multi-word phrases sharing ≥ 2 words are collapsed; the shortest multi-word member becomes the display label
+10. **Stop words** — 200+ words covering articles, prepositions, auxiliaries, common news verbs, source names, and RSS boilerplate
 
 ### Tuning knobs (`TrendingTopicsService.java`)
 
