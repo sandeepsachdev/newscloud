@@ -225,6 +225,43 @@ public class TrendingTopicsService {
         "move", "moves", "area", "areas", "place", "places"
     ));
 
+    // Common first names — blocked as standalone topics, still allowed in bigrams/trigrams
+    // ("John Howard", "Tom Hanks", "Mary Poppins"). Names of places or objects that share
+    // spelling (e.g. "Mark" as a currency) are acceptable collateral; full names win anyway.
+    private static final Set<String> FIRST_NAMES = new HashSet<>(Arrays.asList(
+        // Male
+        "james", "john", "robert", "michael", "william", "david", "richard", "joseph",
+        "thomas", "charles", "christopher", "daniel", "matthew", "anthony", "mark",
+        "steven", "paul", "andrew", "kenneth", "george", "joshua", "kevin", "brian",
+        "edward", "timothy", "jason", "jeffrey", "ryan", "jacob", "gary", "nicholas",
+        "eric", "stephen", "jonathan", "larry", "justin", "scott", "brandon", "frank",
+        "benjamin", "samuel", "patrick", "alexander", "jack", "dennis", "jerry", "henry",
+        "aaron", "adam", "nathan", "zachary", "walter", "harold", "kyle", "carl",
+        "arthur", "gerald", "roger", "peter", "terry", "sean", "alan", "tom", "tony",
+        "mike", "chris", "dave", "nick", "dan", "ben", "sam", "alex", "max", "luke",
+        "jake", "noah", "ethan", "oliver", "liam", "mason", "logan", "aiden", "lucas",
+        "jackson", "joe", "johnny", "billy", "andy", "brad", "chad", "dean", "derek",
+        "evan", "felix", "grant", "harry", "ian", "ivan", "jeff", "jeremy", "joel",
+        "julian", "keith", "lance", "leo", "marcus", "mario", "martin", "matt", "neil",
+        "omar", "oscar", "owen", "phil", "ralph", "randy", "ray", "rob", "rod",
+        "ross", "russell", "travis", "trevor", "victor", "wade", "warren", "wayne",
+        // Female
+        "mary", "patricia", "linda", "barbara", "elizabeth", "jennifer", "maria",
+        "susan", "margaret", "dorothy", "lisa", "nancy", "karen", "betty", "helen",
+        "sandra", "donna", "carol", "ruth", "sharon", "michelle", "laura", "sarah",
+        "kimberly", "deborah", "jessica", "angela", "melissa", "brenda", "amy", "anna",
+        "rebecca", "virginia", "kathleen", "pamela", "martha", "amanda", "stephanie",
+        "carolyn", "christine", "marie", "janet", "catherine", "frances", "ann",
+        "joyce", "diane", "alice", "julie", "heather", "teresa", "gloria", "evelyn",
+        "jean", "cheryl", "katherine", "joan", "ashley", "judith", "rose", "janice",
+        "kelly", "nicole", "judy", "christina", "beverly", "denise", "tammy", "irene",
+        "jane", "lori", "rachel", "marilyn", "andrea", "kathryn", "louise", "sara",
+        "anne", "jacqueline", "wanda", "bonnie", "julia", "ruby", "lois", "tina",
+        "emily", "robin", "emma", "olivia", "ava", "isabella", "sophia", "mia",
+        "charlotte", "abigail", "harper", "ella", "grace", "lily", "claire", "zoe",
+        "victoria", "natalie", "hannah", "julia", "leah", "stella", "eleanor"
+    ));
+
     private final NewsService newsService;
     private volatile List<TrendingTopic> cachedTopics = Collections.emptyList();
     private volatile Instant lastComputedAt = null;
@@ -307,7 +344,8 @@ public class TrendingTopicsService {
                 // still appear inside bigrams/trigrams so they're not in STOP_WORDS.
                 return !properNouns.contains(phrase)
                     || freq < MIN_FREQ_UNIGRAM_PROPER
-                    || GENERIC_PLACES.contains(phrase);
+                    || GENERIC_PLACES.contains(phrase)
+                    || FIRST_NAMES.contains(phrase);
             } else if (wc == 2) {
                 // Gate C — Bigrams need ≥1 proper noun, or high frequency
                 if (freq < MIN_FREQ_BIGRAM_PROPER) return true;
@@ -400,17 +438,36 @@ public class TrendingTopicsService {
             String[] sw = shorter.split(" ");
             int shorterFreq = phraseMap.get(shorter).size();
 
-            for (int j = 0; j < phrases.size(); j++) {
-                if (i == j) continue;
-                String longer = phrases.get(j);
-                String[] lw = longer.split(" ");
-                if (lw.length <= sw.length) continue;
-                if (!isSubphrase(sw, lw)) continue;
-
-                int longerFreq = phraseMap.get(longer).size();
-                if ((double) longerFreq / shorterFreq >= MERGE_THRESHOLD) {
+            if (sw.length == 1) {
+                // If this unigram appears inside ANY surviving multi-word phrase, absorb it.
+                // A standalone first name like "John" or "Tony" should never win over
+                // "John Smith" or "Tony Abbott" — even if each combo only appears once.
+                boolean hasMultiWordForm = false;
+                for (int j = 0; j < phrases.size(); j++) {
+                    if (i == j) continue;
+                    String[] lw = phrases.get(j).split(" ");
+                    if (lw.length > 1 && Arrays.asList(lw).contains(sw[0])) {
+                        hasMultiWordForm = true;
+                        break;
+                    }
+                }
+                if (hasMultiWordForm) {
                     toAbsorb.add(shorter);
-                    break;
+                }
+            } else {
+                // For multi-word phrases: absorb into a longer phrase if one covers enough
+                for (int j = 0; j < phrases.size(); j++) {
+                    if (i == j) continue;
+                    String longer = phrases.get(j);
+                    String[] lw = longer.split(" ");
+                    if (lw.length <= sw.length) continue;
+                    if (!isSubphrase(sw, lw)) continue;
+
+                    int longerFreq = phraseMap.get(longer).size();
+                    if ((double) longerFreq / shorterFreq >= MERGE_THRESHOLD) {
+                        toAbsorb.add(shorter);
+                        break;
+                    }
                 }
             }
         }
