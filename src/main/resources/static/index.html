@@ -250,12 +250,12 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // ── Config ────────────────────────────────────────────────────────────────────
-// Square/rectangle shapes use polar coordinate functions: r(θ) = 1 / max(|cosθ|·a, |sinθ|·b)
+// Square/rectangle/ellipse shapes use polar coordinate functions: r(θ) = 1 / max(|cosθ|·a, |sinθ|·b)
 const SHAPES = [
   { name: 'Circle',    shape: 'circle' },
-  { name: 'Star',      shape: 'star'   },
   { name: 'Square',    shape: (t) => 1 / Math.max(Math.abs(Math.cos(t)), Math.abs(Math.sin(t))) },
   { name: 'Rectangle', shape: (t) => 1 / Math.max(Math.abs(Math.cos(t)), Math.abs(Math.sin(t)) * 1.8) },
+  { name: 'Ellipse',   shape: (t) => 1 / Math.sqrt(Math.pow(Math.cos(t) / 1.6, 2) + Math.pow(Math.sin(t), 2)) },
 ];
 const SHAPE_MS = 20_000;
 const POLL_EMPTY_MS = 10_000;

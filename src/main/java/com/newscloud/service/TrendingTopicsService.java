@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -107,18 +109,99 @@ public class TrendingTopicsService {
         "september", "october", "november", "december"
     ));
 
+    /**
+     * Countries, regions and nationalities that are almost always context rather
+     * than the trending topic itself. These are filtered as UNIGRAMS only — they
+     * can still appear inside bigrams/trigrams (e.g. "Australian Election",
+     * "French Open", "Indian Ocean"). Hotspot countries (China, Russia, Iran,
+     * Israel, Ukraine …) are intentionally omitted so they can surface when
+     * genuinely trending.
+     */
+    private static final Set<String> GENERIC_PLACES = new HashSet<>(Arrays.asList(
+        // Anglosphere
+        "australia", "australian", "australians",
+        "canada", "canadian", "canadians",
+        "britain", "british", "england", "english", "scotland", "scottish", "wales", "welsh",
+        // Western Europe
+        "france", "french",
+        "germany", "german", "germanys",
+        "italy", "italian",
+        "spain", "spanish",
+        "netherlands", "dutch",
+        "belgium", "belgian",
+        "sweden", "swedish",
+        "norway", "norwegian",
+        "denmark", "danish",
+        "finland", "finnish",
+        "switzerland", "swiss",
+        "austria", "austrian",
+        "portugal", "portuguese",
+        "ireland", "irish",
+        "poland", "polish",
+        "greece", "greek",
+        "hungary", "hungarian",
+        "romania", "romanian",
+        "czechia", "czech",
+        // Asia-Pacific
+        "japan", "japanese",
+        "india", "indian", "indians",
+        "indonesia", "indonesian",
+        "pakistan", "pakistani",
+        "bangladesh", "bangladeshi",
+        "philippines", "filipino",
+        "vietnam", "vietnamese",
+        "thailand", "thai",
+        "malaysia", "malaysian",
+        "singapore", "singaporean",
+        "newzealand",
+        // Americas
+        "brazil", "brazilian",
+        "mexico", "mexican",
+        "argentina", "argentine", "argentinian",
+        "colombia", "colombian",
+        "chile", "chilean",
+        "peru", "peruvian",
+        // Africa / Middle East
+        "nigeria", "nigerian",
+        "kenya", "kenyan",
+        "egypt", "egyptian",
+        "ethiopia", "ethiopian",
+        "algeria", "algerian",
+        "morocco", "moroccan",
+        "ghana", "ghanaian",
+        "tanzania", "tanzanian",
+        "saudi", "emirati",
+        "jordan", "jordanian",
+        "qatar", "qatari",
+        // Broad regions (too vague as standalone topics)
+        "europe", "european",
+        "africa", "african",
+        "asia", "asian",
+        "americas", "latin",
+        "middle",
+        // Generic nationalities used as adjectives
+        "american", "american",
+        "western", "eastern"
+    ));
+
     private final NewsService newsService;
     private volatile List<TrendingTopic> cachedTopics = Collections.emptyList();
+    private volatile Instant lastComputedAt = null;
 
     public TrendingTopicsService(NewsService newsService) {
         this.newsService = newsService;
     }
 
-    @Scheduled(initialDelay = 15_000, fixedDelay = 15 * 60_000)
+    // Polls every 30s: runs immediately once articles are available, then throttles to ~15 min
+    @Scheduled(initialDelay = 15_000, fixedDelay = 30_000)
     public void computeTrendingTopics() {
         List<Article> articles = newsService.getArticles();
         if (articles.isEmpty()) {
             log.info("No articles available yet, will retry");
+            return;
+        }
+        if (lastComputedAt != null &&
+                Duration.between(lastComputedAt, Instant.now()).toMinutes() < 14) {
             return;
         }
 
@@ -178,9 +261,12 @@ public class TrendingTopicsService {
             if (freq > idfCutoff) return true;
 
             if (wc == 1) {
-                // Gate B — Unigrams are ONLY kept when they are proper nouns.
-                // Generic words ("tech", "health", "company") never surface as topics.
-                return !properNouns.contains(phrase) || freq < MIN_FREQ_UNIGRAM_PROPER;
+                // Gate B — Unigrams must be proper nouns AND not a generic place name.
+                // Generic places (Australia, France…) are context, not topics; they can
+                // still appear inside bigrams/trigrams so they're not in STOP_WORDS.
+                return !properNouns.contains(phrase)
+                    || freq < MIN_FREQ_UNIGRAM_PROPER
+                    || GENERIC_PLACES.contains(phrase);
             } else if (wc == 2) {
                 // Gate C — Bigrams need ≥1 proper noun, or high frequency
                 if (freq < MIN_FREQ_BIGRAM_PROPER) return true;
@@ -211,6 +297,7 @@ public class TrendingTopicsService {
             .collect(Collectors.toList());
 
         cachedTopics = Collections.unmodifiableList(topics);
+        lastComputedAt = Instant.now();
         log.info("Computed {} trending topics", topics.size());
     }
 
