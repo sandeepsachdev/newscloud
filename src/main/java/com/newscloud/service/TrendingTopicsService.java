@@ -99,11 +99,11 @@ public class TrendingTopicsService {
         // Cardinal directions (only meaningful as part of compound proper nouns)
         "north", "south", "east", "west", "northern", "southern", "eastern", "western",
         // News source names that bleed into descriptions
-        "guardian", "bbc", "cnn", "cbs", "nbc", "npr", "reuters", "skynews", "euronews",
+        "guardian", "bbc", "cnn", "cbs", "nbc", "abc", "npr", "reuters", "skynews", "euronews",
         // Overly generic media/tech terms
         "social", "media", "platform", "platforms", "online", "digital", "tech",
         // Excluded individuals / companies
-        "trump", "donald", "google",
+        "trump", "donald", "google", "pro",
         // Generic nouns that add no topic signal in any context
         "air", "man", "men", "woman", "women", "person",
         "side", "part", "parts", "kind", "type", "form",
@@ -319,10 +319,14 @@ public class TrendingTopicsService {
             }
         });
 
-        // ── Step 4: Absorb single words subsumed by a multi-word phrase ──────────
-        Map<String, Set<Integer>> merged = absorbIntoMultiWord(phraseMap);
+        // ── Step 4: Absorb shorter phrases subsumed by longer ones ───────────────
+        Map<String, Set<Integer>> absorbed = absorbIntoMultiWord(phraseMap);
 
-        // ── Step 5: Build & sort ──────────────────────────────────────────────────
+        // ── Step 5: Merge phrases that share ≥2 words (e.g. "Gaza Ceasefire Talks"
+        //            and "Gaza Ceasefire Deal" → keep the more frequent) ──────────
+        Map<String, Set<Integer>> merged = mergeByWordOverlap(absorbed);
+
+        // ── Step 6: Build & sort ──────────────────────────────────────────────────
         List<TrendingTopic> topics = merged.entrySet().stream()
             .sorted((a, b) -> b.getValue().size() - a.getValue().size())
             .limit(MAX_TOPICS)
@@ -413,6 +417,36 @@ public class TrendingTopicsService {
 
         Map<String, Set<Integer>> result = new HashMap<>(phraseMap);
         toAbsorb.forEach(result::remove);
+        return result;
+    }
+
+    private Map<String, Set<Integer>> mergeByWordOverlap(Map<String, Set<Integer>> phraseMap) {
+        // Sort phrases by frequency desc so we always keep the more frequent one
+        List<String> phrases = phraseMap.entrySet().stream()
+            .sorted((a, b) -> b.getValue().size() - a.getValue().size())
+            .map(Map.Entry::getKey)
+            .collect(Collectors.toList());
+
+        Map<String, Set<Integer>> result = new LinkedHashMap<>();
+        Set<String> consumed = new HashSet<>();
+
+        for (String p1 : phrases) {
+            if (consumed.contains(p1)) continue;
+            Set<String> w1 = new HashSet<>(Arrays.asList(p1.split(" ")));
+            Set<Integer> articles = new HashSet<>(phraseMap.get(p1));
+
+            for (String p2 : phrases) {
+                if (p2.equals(p1) || consumed.contains(p2)) continue;
+                Set<String> w2 = new HashSet<>(Arrays.asList(p2.split(" ")));
+                long shared = w1.stream().filter(w2::contains).count();
+                if (shared >= 2) {
+                    articles.addAll(phraseMap.get(p2));
+                    consumed.add(p2);
+                }
+            }
+
+            result.put(p1, articles);
+        }
         return result;
     }
 
