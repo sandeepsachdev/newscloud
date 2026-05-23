@@ -399,24 +399,62 @@ public class TrendingTopicsService {
     private void extractNgrams(String rawText, int idx, boolean fromTitle,
                                Map<String, PhraseStats> phraseMap) {
         if (rawText == null || rawText.isBlank()) return;
-        List<String> tokens = tokenize(clean(rawText));
         Set<String> seen = new HashSet<>();
 
-        for (int i = 0; i < tokens.size(); i++) {
-            String t0 = tokens.get(i);
-            if (seen.add(t0)) recordPhrase(phraseMap, t0, idx, fromTitle);
+        for (List<String> run : tokenizeIntoRuns(rawText)) {
+            for (int i = 0; i < run.size(); i++) {
+                String t0 = run.get(i);
+                if (seen.add(t0)) recordPhrase(phraseMap, t0, idx, fromTitle);
 
-            if (i + 1 < tokens.size()) {
-                String t1 = tokens.get(i + 1);
-                String bi = t0 + " " + t1;
-                if (seen.add(bi)) recordPhrase(phraseMap, bi, idx, fromTitle);
+                if (i + 1 < run.size()) {
+                    String t1 = run.get(i + 1);
+                    String bi = t0 + " " + t1;
+                    if (seen.add(bi)) recordPhrase(phraseMap, bi, idx, fromTitle);
 
-                if (i + 2 < tokens.size()) {
-                    String tri = t0 + " " + t1 + " " + tokens.get(i + 2);
-                    if (seen.add(tri)) recordPhrase(phraseMap, tri, idx, fromTitle);
+                    if (i + 2 < run.size()) {
+                        String tri = t0 + " " + t1 + " " + run.get(i + 2);
+                        if (seen.add(tri)) recordPhrase(phraseMap, tri, idx, fromTitle);
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Splits text into runs of consecutive content words. Punctuation breaks a
+     * run, and so does any word that the n-gram extractor would otherwise skip
+     * (stopwords, words shorter than {@link #MIN_WORD_LENGTH}, numbers). This
+     * way bigrams and trigrams only span tokens that were actually adjacent in
+     * the source — "Pacific and the Ocean" no longer collapses into the bigram
+     * "pacific ocean".
+     */
+    private List<List<String>> tokenizeIntoRuns(String rawText) {
+        String normalized = rawText
+            .replaceAll("<[^>]*>", " ")
+            .replaceAll("['‘’]s", "")
+            .toLowerCase();
+
+        // Each clause is the text between punctuation marks; runs only form
+        // within a clause, never across one.
+        String[] clauses = normalized.split("[^a-z0-9\\s]+");
+
+        List<List<String>> runs = new ArrayList<>();
+        for (String clause : clauses) {
+            List<String> current = new ArrayList<>();
+            for (String w : clause.split("\\s+")) {
+                if (w.isEmpty()) continue;
+                if (w.length() < MIN_WORD_LENGTH || STOP_WORDS.contains(w) || w.matches("\\d+.*")) {
+                    if (!current.isEmpty()) {
+                        runs.add(current);
+                        current = new ArrayList<>();
+                    }
+                } else {
+                    current.add(w);
+                }
+            }
+            if (!current.isEmpty()) runs.add(current);
+        }
+        return runs;
     }
 
     private void recordPhrase(Map<String, PhraseStats> phraseMap, String phrase,
@@ -633,24 +671,6 @@ public class TrendingTopicsService {
             return true;
         }
         return false;
-    }
-
-    private String clean(String text) {
-        return text
-            .replaceAll("<[^>]*>", " ")
-            .replaceAll("['‘’]s", "")
-            .replaceAll("[^a-zA-Z0-9\\s]", " ")
-            .replaceAll("\\s+", " ")
-            .trim()
-            .toLowerCase();
-    }
-
-    private List<String> tokenize(String text) {
-        return Arrays.stream(text.split("\\s+"))
-            .filter(w -> w.length() >= MIN_WORD_LENGTH)
-            .filter(w -> !STOP_WORDS.contains(w))
-            .filter(w -> !w.matches("\\d+.*"))
-            .collect(Collectors.toList());
     }
 
     private String toTitleCase(String phrase) {
