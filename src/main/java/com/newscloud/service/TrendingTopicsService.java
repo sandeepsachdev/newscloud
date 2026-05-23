@@ -17,8 +17,7 @@ public class TrendingTopicsService {
 
     private static final Logger log = LoggerFactory.getLogger(TrendingTopicsService.class);
 
-    private static final int MAX_TOPICS = 100;
-    private static final int SERVE_TOPICS = 50;
+    private static final int MAX_TOPICS = 60;
     private static final int MIN_WORD_LENGTH = 3;
     private static final int MAX_ARTICLES_PER_TOPIC = 20;
     private static final double MERGE_THRESHOLD = 0.35;
