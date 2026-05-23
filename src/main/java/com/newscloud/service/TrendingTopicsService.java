@@ -15,13 +15,32 @@ public class TrendingTopicsService {
 
     private static final Logger log = LoggerFactory.getLogger(TrendingTopicsService.class);
 
-    private static final int MAX_TOPICS = 65;
-    private static final int MIN_FREQ_UNIGRAM = 3;
-    private static final int MIN_FREQ_BIGRAM = 2;
-    private static final int MIN_FREQ_TRIGRAM = 2;
+    private static final int MAX_TOPICS = 60;
     private static final int MIN_WORD_LENGTH = 3;
-    private static final double MERGE_THRESHOLD = 0.35;
     private static final int MAX_ARTICLES_PER_TOPIC = 20;
+    private static final double MERGE_THRESHOLD = 0.35;
+
+    // Frequency thresholds ─────────────────────────────────────────────────────
+    /**
+     * Single words are ONLY allowed if they are identified as proper nouns.
+     * Generic single words ("tech", "health", "company") are never trending topics.
+     */
+    private static final int MIN_FREQ_UNIGRAM_PROPER = 3;
+    /** Bigrams where ≥1 word is a known proper noun */
+    private static final int MIN_FREQ_BIGRAM_PROPER = 2;
+    /** Bigrams with no proper nouns (e.g. "climate change") need more signal */
+    private static final int MIN_FREQ_BIGRAM_GENERIC = 5;
+    /** Trigrams are specific by nature — low bar */
+    private static final int MIN_FREQ_TRIGRAM = 2;
+
+    // IDF filter: remove phrases present in more than this fraction of all articles
+    private static final double IDF_MAX_RATIO = 0.25;
+
+    // Proper-noun detection thresholds
+    /** Minimum mid-sentence appearances in descriptions before classifying */
+    private static final int PN_MIN_SAMPLES = 1;
+    /** Fraction that must be capitalised mid-sentence for word → proper noun */
+    private static final double PN_CAP_RATE = 0.60;
 
     private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
         // Articles & determiners
@@ -69,10 +88,16 @@ public class TrendingTopicsService {
         "between", "around", "among", "within", "without", "across", "along",
         "behind", "beyond", "despite", "except", "following", "including",
         "regarding", "concerning", "due", "vs", "amid",
-        // RSS / web boilerplate
+        // RSS / web / subscription boilerplate
         "read", "reading", "click", "watch", "sign", "share", "subscribe", "follow",
         "latest", "breaking", "update", "updates", "full", "more", "top", "former",
-        "continues", "continue", "continued", "learn", "getty", "afp", "reuters",
+        "continues", "continue", "continued", "learn", "getty", "afp",
+        "app", "free", "daily", "email", "podcast", "newsletter", "download",
+        "edition", "alerts", "alert", "inbox",
+        // Cardinal directions (only meaningful as part of compound proper nouns)
+        "north", "south", "east", "west", "northern", "southern", "eastern", "western",
+        // News source names that bleed into descriptions
+        "guardian", "bbc", "cnn", "npr", "reuters", "skynews",
         // Numbers as words
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
         "nine", "ten", "hundred", "thousand", "million", "billion",
@@ -97,76 +122,142 @@ public class TrendingTopicsService {
             return;
         }
 
-        log.info("Computing trending topics from {} articles", articles.size());
+        int total = articles.size();
+        log.info("Computing trending topics from {} articles", total);
 
-        // phrase -> set of article indices (document frequency)
-        Map<String, Set<Integer>> phraseToArticles = new HashMap<>();
+        // ── Step 1: Detect proper nouns via mid-sentence capitalisation in descriptions
+        // Descriptions are written in sentence-case, so only real proper nouns stay
+        // capitalised mid-sentence — unlike Title Case headlines where every word is capital.
+        Map<String, int[]> pnStats = new HashMap<>();
+        for (Article article : articles) {
+            if (article.description() != null && article.description().length() > 30) {
+                collectDescriptionStats(article.description(), pnStats);
+            }
+        }
+        Set<String> properNouns = resolveProperNouns(pnStats);
+        log.info("Proper-noun candidates ({}): {}…", properNouns.size(),
+            properNouns.stream().sorted().limit(40).collect(Collectors.toList()));
+
+        // ── Step 2: Extract n-grams with document frequency ─────────────────────
+        Map<String, Set<Integer>> phraseMap = new HashMap<>();
 
         for (int idx = 0; idx < articles.size(); idx++) {
             Article article = articles.get(idx);
-            // Weight titles more by prepending them twice
+            // Titles are more signal-rich — include them twice
             String text = clean(article.title() + " " + article.title() + " " + article.description());
             List<String> tokens = tokenize(text);
-
-            // Track what we've seen in THIS article to avoid counting duplicates
-            Set<String> seenPhrases = new HashSet<>();
+            Set<String> seen = new HashSet<>();
 
             for (int i = 0; i < tokens.size(); i++) {
                 String t0 = tokens.get(i);
-
-                if (seenPhrases.add(t0)) {
-                    phraseToArticles.computeIfAbsent(t0, k -> new HashSet<>()).add(idx);
-                }
+                if (seen.add(t0)) phraseMap.computeIfAbsent(t0, k -> new HashSet<>()).add(idx);
 
                 if (i + 1 < tokens.size()) {
                     String t1 = tokens.get(i + 1);
-                    String bigram = t0 + " " + t1;
-                    if (seenPhrases.add(bigram)) {
-                        phraseToArticles.computeIfAbsent(bigram, k -> new HashSet<>()).add(idx);
-                    }
+                    String bi = t0 + " " + t1;
+                    if (seen.add(bi)) phraseMap.computeIfAbsent(bi, k -> new HashSet<>()).add(idx);
 
                     if (i + 2 < tokens.size()) {
-                        String t2 = tokens.get(i + 2);
-                        String trigram = t0 + " " + t1 + " " + t2;
-                        if (seenPhrases.add(trigram)) {
-                            phraseToArticles.computeIfAbsent(trigram, k -> new HashSet<>()).add(idx);
-                        }
+                        String tri = t0 + " " + t1 + " " + tokens.get(i + 2);
+                        if (seen.add(tri)) phraseMap.computeIfAbsent(tri, k -> new HashSet<>()).add(idx);
                     }
                 }
             }
         }
 
-        // Filter by minimum document frequency based on phrase length
-        phraseToArticles.entrySet().removeIf(e -> {
-            int words = e.getKey().split(" ").length;
+        // ── Step 3: Three-gate filter ────────────────────────────────────────────
+        double idfCutoff = total * IDF_MAX_RATIO;
+
+        phraseMap.entrySet().removeIf(e -> {
+            String phrase = e.getKey();
             int freq = e.getValue().size();
-            return (words == 1 && freq < MIN_FREQ_UNIGRAM)
-                || (words == 2 && freq < MIN_FREQ_BIGRAM)
-                || (words >= 3 && freq < MIN_FREQ_TRIGRAM);
+            String[] words = phrase.split(" ");
+            int wc = words.length;
+
+            // Gate A — IDF: phrases in >25 % of all articles are too generic
+            if (freq > idfCutoff) return true;
+
+            if (wc == 1) {
+                // Gate B — Unigrams are ONLY kept when they are proper nouns.
+                // Generic words ("tech", "health", "company") never surface as topics.
+                return !properNouns.contains(phrase) || freq < MIN_FREQ_UNIGRAM_PROPER;
+            } else if (wc == 2) {
+                // Gate C — Bigrams need ≥1 proper noun, or high frequency
+                if (freq < MIN_FREQ_BIGRAM_PROPER) return true;
+                boolean hasProper = properNouns.contains(words[0]) || properNouns.contains(words[1]);
+                return !hasProper && freq < MIN_FREQ_BIGRAM_GENERIC;
+            } else {
+                // Trigrams are specific enough; just enforce minimum frequency
+                return freq < MIN_FREQ_TRIGRAM;
+            }
         });
 
-        // Absorb single words that are well-represented by a multi-word phrase
-        Map<String, Set<Integer>> merged = absorbIntoMultiWord(phraseToArticles);
+        // ── Step 4: Absorb single words subsumed by a multi-word phrase ──────────
+        Map<String, Set<Integer>> merged = absorbIntoMultiWord(phraseMap);
 
-        // Build final topic list sorted by frequency
+        // ── Step 5: Build & sort ──────────────────────────────────────────────────
         List<TrendingTopic> topics = merged.entrySet().stream()
             .sorted((a, b) -> b.getValue().size() - a.getValue().size())
             .limit(MAX_TOPICS)
             .map(e -> {
                 String phrase = toTitleCase(e.getKey());
-                Set<Integer> articleIndices = e.getValue();
-                List<Article> topicArticles = articleIndices.stream()
+                List<Article> topicArticles = e.getValue().stream()
                     .sorted(Comparator.reverseOrder())
                     .limit(MAX_ARTICLES_PER_TOPIC)
                     .map(articles::get)
                     .collect(Collectors.toList());
-                return new TrendingTopic(phrase, articleIndices.size(), topicArticles);
+                return new TrendingTopic(phrase, e.getValue().size(), topicArticles);
             })
             .collect(Collectors.toList());
 
         cachedTopics = Collections.unmodifiableList(topics);
         log.info("Computed {} trending topics", topics.size());
     }
+
+    // ── Proper-noun helpers ────────────────────────────────────────────────────
+
+    /**
+     * Scans description text for words appearing mid-sentence.
+     * In sentence-case prose only proper nouns keep their capital mid-sentence,
+     * so capitalisation rate here is a reliable proper-noun signal.
+     */
+    private void collectDescriptionStats(String description, Map<String, int[]> stats) {
+        String text = description
+            .replaceAll("<[^>]*>", " ")
+            .replaceAll("\\s+", " ")
+            .trim();
+
+        // Split on sentence boundaries (keeps sentence-start capitals out of analysis)
+        String[] sentences = text.split("(?<=[.!?])\\s+");
+
+        for (String sentence : sentences) {
+            String[] words = sentence.split("\\s+");
+            for (int i = 1; i < words.length; i++) { // skip position 0 — sentence start
+                String raw = words[i].replaceAll("[^a-zA-Z]", "");
+                if (raw.length() < MIN_WORD_LENGTH) continue;
+                String lower = raw.toLowerCase();
+                if (STOP_WORDS.contains(lower)) continue;
+                if (lower.matches("\\d+.*")) continue;
+
+                int[] s = stats.computeIfAbsent(lower, k -> new int[2]);
+                s[1]++; // total mid-sentence appearances
+                if (Character.isUpperCase(raw.charAt(0))) s[0]++; // capitalised mid-sentence
+            }
+        }
+    }
+
+    private Set<String> resolveProperNouns(Map<String, int[]> stats) {
+        Set<String> result = new HashSet<>();
+        for (Map.Entry<String, int[]> e : stats.entrySet()) {
+            int[] s = e.getValue();
+            if (s[1] >= PN_MIN_SAMPLES && (double) s[0] / s[1] >= PN_CAP_RATE) {
+                result.add(e.getKey());
+            }
+        }
+        return result;
+    }
+
+    // ── Phrase helpers ─────────────────────────────────────────────────────────
 
     private Map<String, Set<Integer>> absorbIntoMultiWord(Map<String, Set<Integer>> phraseMap) {
         Set<String> multiWord = phraseMap.keySet().stream()
@@ -175,23 +266,16 @@ public class TrendingTopicsService {
 
         Set<String> toAbsorb = new HashSet<>();
 
-        for (String unigram : new ArrayList<>(phraseMap.keySet())) {
-            if (unigram.contains(" ")) continue;
-            int uniFreq = phraseMap.get(unigram).size();
+        for (String uni : new ArrayList<>(phraseMap.keySet())) {
+            if (uni.contains(" ")) continue;
+            int uniFreq = phraseMap.get(uni).size();
 
             for (String multi : multiWord) {
-                String[] parts = multi.split(" ");
-                boolean contains = false;
-                for (String part : parts) {
-                    if (part.equals(unigram)) {
-                        contains = true;
-                        break;
-                    }
-                }
-                if (contains) {
+                boolean wordInPhrase = Arrays.asList(multi.split(" ")).contains(uni);
+                if (wordInPhrase) {
                     int multiFreq = phraseMap.get(multi).size();
                     if ((double) multiFreq / uniFreq >= MERGE_THRESHOLD) {
-                        toAbsorb.add(unigram);
+                        toAbsorb.add(uni);
                         break;
                     }
                 }
@@ -206,7 +290,7 @@ public class TrendingTopicsService {
     private String clean(String text) {
         return text
             .replaceAll("<[^>]*>", " ")
-            .replaceAll("'s|'s", "")
+            .replaceAll("['‘’]s", "")
             .replaceAll("[^a-zA-Z0-9\\s]", " ")
             .replaceAll("\\s+", " ")
             .trim()

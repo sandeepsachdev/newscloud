@@ -28,9 +28,9 @@ public class NewsService {
         "https://feeds.bbci.co.uk/news/world/rss.xml",
         "https://feeds.bbci.co.uk/news/technology/rss.xml",
         "https://feeds.bbci.co.uk/news/business/rss.xml",
-        "https://feeds.reuters.com/reuters/topNews",
-        "https://feeds.reuters.com/reuters/worldNews",
-        "https://rss.cnn.com/rss/edition.rss",
+        "https://feeds.apnews.com/apnews/topnews",          // replaced reuters/topNews
+        "https://feeds.apnews.com/apnews/politics",         // replaced reuters/worldNews
+        "https://feeds.apnews.com/apnews/science",
         "https://www.aljazeera.com/xml/rss/all.xml",
         "https://www.theguardian.com/world/rss",
         "https://www.theguardian.com/technology/rss",
