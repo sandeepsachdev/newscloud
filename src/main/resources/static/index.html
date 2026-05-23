@@ -553,14 +553,12 @@ function renderLastRefreshed() {
 function formatBuildTimestamp(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  // "May 23, 2026 at 9:50 PM"
-  const datePart = d.toLocaleDateString(undefined, {
-    year: 'numeric', month: 'long', day: 'numeric'
-  });
+  // "May 23 9:50 PM" — drops year (current is obvious) and the "at" filler.
+  const datePart = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const timePart = d.toLocaleTimeString(undefined, {
     hour: 'numeric', minute: '2-digit', hour12: true
   });
-  return `${datePart} at ${timePart}`;
+  return `${datePart} ${timePart}`;
 }
 
 function refreshedAgo(ts) {
