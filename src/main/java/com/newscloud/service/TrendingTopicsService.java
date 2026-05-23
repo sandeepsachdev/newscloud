@@ -133,6 +133,9 @@ public class TrendingTopicsService {
     private static final Set<String> GENERIC_PLACES = new HashSet<>(Arrays.asList(
         // Anglosphere
         "australia", "australian", "australians",
+        "queensland", "queenslander",
+        "victoria", "victorian",
+        "nsw", "act",
         "canada", "canadian", "canadians",
         "britain", "british", "england", "english", "scotland", "scottish", "wales", "welsh",
         "newzealand", "zealand",
@@ -364,8 +367,13 @@ public class TrendingTopicsService {
         //            and "Gaza Ceasefire Deal" → keep the more frequent) ──────────
         Map<String, Set<Integer>> merged = mergeByWordOverlap(absorbed);
 
-        // ── Step 6: Build & sort ──────────────────────────────────────────────────
-        List<TrendingTopic> topics = merged.entrySet().stream()
+        // ── Step 6: Deduplicate by proper noun — if the same proper noun drives
+        //            multiple topics (e.g. "Tulsi Gabbard" + "Tulsi Hearing"),
+        //            keep only the most frequent ──────────────────────────────────
+        Map<String, Set<Integer>> deduped = deduplicateByProperNoun(merged, properNouns);
+
+        // ── Step 7: Build & sort ──────────────────────────────────────────────────
+        List<TrendingTopic> topics = deduped.entrySet().stream()
             .sorted((a, b) -> b.getValue().size() - a.getValue().size())
             .limit(MAX_TOPICS)
             .map(e -> {
@@ -474,6 +482,42 @@ public class TrendingTopicsService {
 
         Map<String, Set<Integer>> result = new HashMap<>(phraseMap);
         toAbsorb.forEach(result::remove);
+        return result;
+    }
+
+    private Map<String, Set<Integer>> deduplicateByProperNoun(
+            Map<String, Set<Integer>> phraseMap, Set<String> properNouns) {
+
+        // Sort phrases by frequency desc — we always keep the most frequent one
+        List<String> phrases = phraseMap.entrySet().stream()
+            .sorted((a, b) -> b.getValue().size() - a.getValue().size())
+            .map(Map.Entry::getKey)
+            .collect(Collectors.toList());
+
+        Map<String, Set<Integer>> result = new LinkedHashMap<>();
+        Set<String> consumed = new HashSet<>();
+
+        for (String phrase : phrases) {
+            if (consumed.contains(phrase)) continue;
+
+            Set<Integer> articles = new HashSet<>(phraseMap.get(phrase));
+            String[] words = phrase.split(" ");
+
+            // For each proper noun in this phrase, absorb any other surviving phrase
+            // that also contains that proper noun
+            for (String word : words) {
+                if (!properNouns.contains(word)) continue;
+                for (String other : phrases) {
+                    if (other.equals(phrase) || consumed.contains(other)) continue;
+                    if (Arrays.asList(other.split(" ")).contains(word)) {
+                        articles.addAll(phraseMap.get(other));
+                        consumed.add(other);
+                    }
+                }
+            }
+
+            result.put(phrase, articles);
+        }
         return result;
     }
 
