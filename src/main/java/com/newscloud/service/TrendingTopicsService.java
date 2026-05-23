@@ -536,14 +536,25 @@ public class TrendingTopicsService {
 
         for (String p1 : phrases) {
             if (consumed.contains(p1)) continue;
-            Set<String> w1 = new HashSet<>(Arrays.asList(p1.split(" ")));
+            String[] p1Words = p1.split(" ");
+
+            // Unigrams pass through unchanged — overlap merging only runs between
+            // word combinations of length > 1
+            if (p1Words.length <= 1) {
+                result.put(p1, phraseMap.get(p1));
+                continue;
+            }
+
+            Set<String> w1 = new HashSet<>(Arrays.asList(p1Words));
             Set<Integer> articles = new HashSet<>(phraseMap.get(p1));
             List<String> members = new ArrayList<>();
             members.add(p1);
 
             for (String p2 : phrases) {
                 if (p2.equals(p1) || consumed.contains(p2)) continue;
-                Set<String> w2 = new HashSet<>(Arrays.asList(p2.split(" ")));
+                String[] p2Words = p2.split(" ");
+                if (p2Words.length <= 1) continue;
+                Set<String> w2 = new HashSet<>(Arrays.asList(p2Words));
                 long shared = w1.stream().filter(w2::contains).count();
                 if (shared >= 2) {
                     articles.addAll(phraseMap.get(p2));
