@@ -502,6 +502,8 @@ public class TrendingTopicsService {
 
             Set<Integer> articles = new HashSet<>(phraseMap.get(phrase));
             String[] words = phrase.split(" ");
+            List<String> members = new ArrayList<>();
+            members.add(phrase);
 
             // For each proper noun in this phrase, absorb any other surviving phrase
             // that also contains that proper noun
@@ -512,11 +514,12 @@ public class TrendingTopicsService {
                     if (Arrays.asList(other.split(" ")).contains(word)) {
                         articles.addAll(phraseMap.get(other));
                         consumed.add(other);
+                        members.add(other);
                     }
                 }
             }
 
-            result.put(phrase, articles);
+            result.put(pickConsolidatedName(members), articles);
         }
         return result;
     }
@@ -535,6 +538,8 @@ public class TrendingTopicsService {
             if (consumed.contains(p1)) continue;
             Set<String> w1 = new HashSet<>(Arrays.asList(p1.split(" ")));
             Set<Integer> articles = new HashSet<>(phraseMap.get(p1));
+            List<String> members = new ArrayList<>();
+            members.add(p1);
 
             for (String p2 : phrases) {
                 if (p2.equals(p1) || consumed.contains(p2)) continue;
@@ -543,12 +548,33 @@ public class TrendingTopicsService {
                 if (shared >= 2) {
                     articles.addAll(phraseMap.get(p2));
                     consumed.add(p2);
+                    members.add(p2);
                 }
             }
 
-            result.put(p1, articles);
+            result.put(pickConsolidatedName(members), articles);
         }
         return result;
+    }
+
+    /**
+     * When multiple phrases are merged into one consolidated topic, display the
+     * shortest member name (by word count) that is at least 2 words long. Falls
+     * back to the first member (highest-frequency, due to caller sort order) if
+     * no member meets the 2-word floor or no consolidation happened.
+     */
+    private String pickConsolidatedName(List<String> members) {
+        String best = members.get(0);
+        if (members.size() == 1) return best;
+        int bestLen = Integer.MAX_VALUE;
+        for (String m : members) {
+            int len = m.split(" ").length;
+            if (len >= 2 && len < bestLen) {
+                best = m;
+                bestLen = len;
+            }
+        }
+        return best;
     }
 
     private boolean isSubphrase(String[] shorter, String[] longer) {
