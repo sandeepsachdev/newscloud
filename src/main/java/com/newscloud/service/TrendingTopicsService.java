@@ -218,6 +218,38 @@ public class TrendingTopicsService {
         "party", "union", "council", "assembly", "parliament", "senate", "congress",
         "bank", "fund", "market", "markets",
         "war", "wars", "force", "forces", "crisis", "conflict",
+        // Geographic features — context, not topics. Still allowed in bigrams/trigrams
+        // ("South China Sea", "Indian Ocean", "Amazon River", "Atlas Mountains").
+        "sea", "seas", "ocean", "oceans",
+        "river", "rivers", "lake", "lakes",
+        "mountain", "mountains", "hill", "hills",
+        "desert", "deserts", "forest", "forests", "jungle", "jungles",
+        "valley", "valleys", "canyon", "canyons", "plateau", "plateaus",
+        "beach", "beaches", "coast", "coasts", "shore", "shores",
+        "peninsula", "peninsulas", "gulf", "gulfs", "strait", "straits", "channel",
+        "harbor", "harbour", "harbors", "harbours",
+        "glacier", "glaciers", "volcano", "volcanoes", "delta", "deltas",
+        "continent", "continents",
+        // Major world cities — typically background context, not the news topic.
+        // Hotspot cities (Kyiv, Gaza, Jerusalem, Tehran, Moscow, Damascus, Beirut,
+        // Baghdad, Kabul, Washington …) are intentionally omitted so they can
+        // surface when genuinely trending. City names stay allowed in bigrams/
+        // trigrams ("Paris Agreement", "Tokyo Olympics", "London Bridge").
+        "london", "paris", "berlin", "madrid", "rome", "milan", "barcelona",
+        "brussels", "amsterdam", "vienna", "prague", "warsaw", "budapest",
+        "athens", "lisbon", "dublin", "edinburgh", "glasgow", "manchester",
+        "copenhagen", "stockholm", "helsinki", "oslo",
+        "istanbul", "ankara",
+        "cairo", "johannesburg", "nairobi", "lagos", "casablanca", "addis",
+        "beijing", "shanghai", "tokyo", "kyoto", "osaka", "seoul",
+        "mumbai", "delhi", "kolkata", "chennai", "bangalore", "hyderabad",
+        "karachi", "lahore", "islamabad", "dhaka", "manila", "jakarta",
+        "bangkok", "hanoi", "kuala", "lumpur", "taipei",
+        "riyadh", "dubai", "doha", "abu",
+        "ottawa", "toronto", "montreal", "vancouver",
+        "sydney", "melbourne", "auckland", "wellington", "brisbane", "perth",
+        "chicago", "boston", "miami", "atlanta", "dallas", "houston",
+        "philadelphia", "seattle", "denver", "phoenix",
         // Generic nouns useful in bigrams ("Climate Change", "Terror Attack", "Foreign Policy")
         // but too vague as standalone topics
         "change", "changes", "attack", "attacks",
