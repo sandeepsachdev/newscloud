@@ -14,7 +14,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -75,12 +77,40 @@ public class NewsService {
         }
 
         if (!fresh.isEmpty()) {
+            List<Article> deduped = dedupeBySourceAndContent(fresh);
             articles.clear();
-            articles.addAll(fresh);
+            articles.addAll(deduped);
             lastUpdated.set(Instant.now());
             successfulFeeds.set(success);
-            log.info("Loaded {} articles from {}/{} feeds", fresh.size(), success, FEED_URLS.size());
+            int dropped = fresh.size() - deduped.size();
+            if (dropped > 0) {
+                log.info("Loaded {} articles from {}/{} feeds ({} duplicates dropped)",
+                        deduped.size(), success, FEED_URLS.size(), dropped);
+            } else {
+                log.info("Loaded {} articles from {}/{} feeds", deduped.size(), success, FEED_URLS.size());
+            }
         }
+    }
+
+    // Some feeds (notably BBC) republish the same item under multiple URLs, so
+    // a single story can otherwise inflate every topic it mentions. Collapse
+    // entries that share the same source + title + description, keeping the
+    // first occurrence — feeds list newest-first, so this preserves the
+    // earliest-seen URL.
+    private static List<Article> dedupeBySourceAndContent(List<Article> input) {
+        Set<String> seen = new HashSet<>(input.size() * 2);
+        List<Article> out = new ArrayList<>(input.size());
+        for (Article a : input) {
+            String key = normalize(a.source()) + ""
+                       + normalize(a.title()) + ""
+                       + normalize(a.description());
+            if (seen.add(key)) out.add(a);
+        }
+        return out;
+    }
+
+    private static String normalize(String s) {
+        return s == null ? "" : s.trim().toLowerCase();
     }
 
     private List<Article> fetchFeed(String feedUrl) throws Exception {
