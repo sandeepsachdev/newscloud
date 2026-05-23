@@ -283,15 +283,27 @@ let pollTimer       = null;
 let modal           = null;
 let lastRefreshAt   = null;
 let lastRefreshTimer = null;
+let buildTimestamp  = null;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   modal = new bootstrap.Modal(document.getElementById('articlesModal'));
   buildDots();
+  fetchStatus();
   fetchTopics();
   startShapeCycle();
   lastRefreshTimer = setInterval(renderLastRefreshed, 30_000);
 });
+
+async function fetchStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) return;
+    const status = await res.json();
+    buildTimestamp = status.buildTimestamp || null;
+    renderLastRefreshed();
+  } catch (e) { /* non-fatal */ }
+}
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 async function fetchTopics() {
@@ -509,7 +521,23 @@ function renderLastRefreshed() {
     return;
   }
   el.classList.remove('hidden');
-  el.textContent = `Last refreshed: ${refreshedAgo(lastRefreshAt)}`;
+  const parts = [`Last refreshed: ${refreshedAgo(lastRefreshAt)}`];
+  if (allTopics.length > 0) {
+    parts.push(`${allTopics.length} topics`);
+  }
+  if (buildTimestamp) {
+    parts.push(`built ${formatBuildTimestamp(buildTimestamp)}`);
+  }
+  el.textContent = parts.join(' · ');
+}
+
+function formatBuildTimestamp(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit'
+  });
 }
 
 function refreshedAgo(ts) {
