@@ -100,6 +100,12 @@
     }
     .sdot.active { background: var(--c1); transform: scale(1.4); }
 
+    #last-refreshed {
+      font-size: .68rem; color: var(--muted); letter-spacing: .04em;
+      margin-top: 2px;
+    }
+    #last-refreshed.hidden { visibility: hidden; }
+
     /* ── Empty / loading state ── */
     #cloud-placeholder {
       display: flex; flex-direction: column; align-items: center;
@@ -225,6 +231,7 @@
   <div id="shape-name">Circle</div>
   <div id="timer-track"><div id="timer-fill"></div></div>
   <div id="shape-dots"></div>
+  <div id="last-refreshed" class="hidden">Last refreshed: just now</div>
 </div>
 
 <!-- Articles modal -->
@@ -274,6 +281,8 @@ let shapeIdx  = 0;
 let shapeCycleTimer = null;
 let pollTimer       = null;
 let modal           = null;
+let lastRefreshAt   = null;
+let lastRefreshTimer = null;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -281,6 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
   buildDots();
   fetchTopics();
   startShapeCycle();
+  lastRefreshTimer = setInterval(renderLastRefreshed, 30_000);
 });
 
 // ── Data ──────────────────────────────────────────────────────────────────────
@@ -296,6 +306,8 @@ async function fetchTopics() {
     if (topics.length > 0) {
       renderCloud(shapeIdx);
       setStatus(`${topics.length} trending topics`, 'live');
+      lastRefreshAt = Date.now();
+      renderLastRefreshed();
       schedulePoll(POLL_LIVE_MS);
     } else {
       showPlaceholder();
@@ -487,6 +499,25 @@ function timeAgo(iso) {
   if (ms < 86_400_000)  return `${Math.floor(ms / 3_600_000)}h ago`;
   if (ms < 604_800_000) return `${Math.floor(ms / 86_400_000)}d ago`;
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function renderLastRefreshed() {
+  const el = document.getElementById('last-refreshed');
+  if (!el) return;
+  if (lastRefreshAt == null) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+  el.textContent = `Last refreshed: ${refreshedAgo(lastRefreshAt)}`;
+}
+
+function refreshedAgo(ts) {
+  const ms = Date.now() - ts;
+  if (ms < 60_000)     return 'just now';
+  if (ms < 3_600_000)  return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 function setStatus(msg, cls) {
