@@ -361,8 +361,15 @@ function renderCloud(sIdx) {
 
   const canvas = document.getElementById('cloud-canvas');
   const { w, h } = canvasSize();
-  canvas.width  = w;
-  canvas.height = h;
+  // Render at device-pixel resolution so small words stay crisp on retina
+  // displays. Cap at 3× to keep the bitmap from getting absurdly large on
+  // phones that report dpr=4. weightFactor scales the font, gridSize scales
+  // the placement grid, so wordcloud2.js draws at the higher resolution.
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  canvas.width  = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
 
   const maxFreq = allTopics[0].frequency;
   const minFreq = allTopics[allTopics.length - 1].frequency;
@@ -395,8 +402,8 @@ function renderCloud(sIdx) {
 
   WordCloud(canvas, {
     list:          wordList,
-    gridSize:      mobile ? 9 : 11,
-    weightFactor:  1,
+    gridSize:      Math.round((mobile ? 9 : 11) * dpr),
+    weightFactor:  dpr,
     fontFamily:    '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
     fontWeight:    '600',
     color: (word) => {
