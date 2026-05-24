@@ -419,8 +419,17 @@ public class TrendingTopicsService {
         //            keep only the most frequent ──────────────────────────────────
         Map<String, PhraseStats> deduped = deduplicateByProperNoun(merged, properNouns);
 
-        // ── Step 7: Build & sort ──────────────────────────────────────────────────
-        List<TrendingTopic> topics = deduped.entrySet().stream()
+        // ── Step 7: Require coverage from ≥2 distinct sources ────────────────────
+        // A phrase that only one outlet is using isn't really "trending" — it's
+        // one newsroom's local interest. This kills single-source noise (e.g.
+        // BBC-only series titles, lifestyle columns) before the sort/limit.
+        Map<String, PhraseStats> multiSource = deduped.entrySet().stream()
+            .filter(e -> countSources(e.getValue(), articles) >= 2)
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                    (a, b) -> a, LinkedHashMap::new));
+
+        // ── Step 8: Build & sort ──────────────────────────────────────────────────
+        List<TrendingTopic> topics = multiSource.entrySet().stream()
             .sorted((a, b) -> b.getValue().weight() - a.getValue().weight())
             .limit(MAX_TOPICS)
             .map(e -> {
@@ -556,6 +565,17 @@ public class TrendingTopicsService {
     }
 
     // ── Phrase helpers ─────────────────────────────────────────────────────────
+
+    private static int countSources(PhraseStats stats, List<Article> articles) {
+        Set<String> sources = new HashSet<>();
+        for (int idx : stats.articles) {
+            if (idx >= 0 && idx < articles.size()) {
+                String src = articles.get(idx).source();
+                if (src != null) sources.add(src);
+            }
+        }
+        return sources.size();
+    }
 
     private Map<String, PhraseStats> absorbIntoMultiWord(Map<String, PhraseStats> phraseMap) {
         List<String> phrases = new ArrayList<>(phraseMap.keySet());
