@@ -1,6 +1,9 @@
 package com.newscloud.service;
 
 import com.newscloud.model.Article;
+import com.newscloud.model.ComputeResult;
+import com.newscloud.model.ComputeStats;
+import com.newscloud.model.TopicConfig;
 import com.newscloud.model.TrendingTopic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,32 +20,10 @@ public class TrendingTopicsService {
 
     private static final Logger log = LoggerFactory.getLogger(TrendingTopicsService.class);
 
-    private static final int MAX_TOPICS = 60;
-    private static final int MIN_WORD_LENGTH = 3;
-    private static final int MAX_ARTICLES_PER_TOPIC = 20;
-    private static final double MERGE_THRESHOLD = 0.35;
-
-    // Frequency thresholds ─────────────────────────────────────────────────────
-    /**
-     * Single words are ONLY allowed if they are identified as proper nouns.
-     * Generic single words ("tech", "health", "company") are never trending topics.
-     */
-    private static final int MIN_FREQ_UNIGRAM_PROPER = 4;
-    /** Bigrams where ≥1 word is a known proper noun */
-    private static final int MIN_FREQ_BIGRAM_PROPER = 2;
-    /** Bigrams with no proper nouns (e.g. "climate change") need more signal */
-    private static final int MIN_FREQ_BIGRAM_GENERIC = 5;
-    /** Trigrams are specific by nature — low bar */
-    private static final int MIN_FREQ_TRIGRAM = 2;
-
-    // IDF filter: remove phrases present in more than this fraction of all articles
-    private static final double IDF_MAX_RATIO = 0.25;
-
-    // Proper-noun detection thresholds
-    /** Minimum mid-sentence appearances in descriptions before classifying */
-    private static final int PN_MIN_SAMPLES = 2;
-    /** Fraction that must be capitalised mid-sentence for word → proper noun */
-    private static final double PN_CAP_RATE = 0.75;
+    // Tuning knobs that used to be hard-coded now live in a mutable TopicConfig
+    // owned by this service. The scheduled compute reads them; settings-page
+    // edits mutate them; preview runs pass a transient override without
+    // touching the active config.
 
     private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
         // Articles & determiners
@@ -299,10 +280,44 @@ public class TrendingTopicsService {
 
     private final NewsService newsService;
     private volatile List<TrendingTopic> cachedTopics = Collections.emptyList();
+    private volatile ComputeStats cachedStats = null;
     private volatile Instant lastComputedAt = null;
+    private volatile TopicConfig activeConfig = new TopicConfig();
 
     public TrendingTopicsService(NewsService newsService) {
         this.newsService = newsService;
+    }
+
+    public List<TrendingTopic> getTrendingTopics() {
+        return cachedTopics;
+    }
+
+    public ComputeStats getCachedStats() {
+        return cachedStats;
+    }
+
+    public TopicConfig getActiveConfig() {
+        return activeConfig.copy();
+    }
+
+    /**
+     * Replace the live config and invalidate the scheduling throttle so the
+     * next scheduled tick recomputes immediately with the new values. The
+     * caller is expected to hand over a fully-populated TopicConfig — partial
+     * updates aren't supported (the settings page always submits everything).
+     */
+    public void setActiveConfig(TopicConfig cfg) {
+        this.activeConfig = cfg;
+        this.lastComputedAt = null;
+    }
+
+    /**
+     * Run the pipeline against the given articles + config without touching
+     * cached state. Used by the preview endpoint so the settings page can
+     * show "before vs after" without disturbing the live word cloud.
+     */
+    public ComputeResult previewWithConfig(TopicConfig cfg) {
+        return compute(newsService.getArticles(), cfg);
     }
 
     /**
@@ -335,130 +350,143 @@ public class TrendingTopicsService {
             return;
         }
 
-        // Only consider articles published within the last 24 hours. Articles
-        // without a known publish date are skipped — we can't honour the
-        // window if the feed didn't tell us when it ran.
-        Instant cutoff = Instant.now().minus(Duration.ofHours(24));
+        ComputeResult result = compute(allArticles, activeConfig);
+        cachedTopics = Collections.unmodifiableList(result.topics);
+        cachedStats = result.stats;
+        lastComputedAt = Instant.now();
+
+        if (result.topics.isEmpty()) {
+            log.info("Computed 0 topics — {} articles total, {} in window",
+                    result.stats.totalArticles, result.stats.articlesInWindow);
+            return;
+        }
+        log.info("Computed {} trending topics (highest → lowest):", result.topics.size());
+        for (int i = 0; i < result.topics.size(); i++) {
+            TrendingTopic t = result.topics.get(i);
+            log.info("  {}. {} ({})", i + 1, t.phrase(), t.frequency());
+        }
+    }
+
+    /**
+     * The whole pipeline as a pure(-ish) function: given a snapshot of articles
+     * and a config, return the resulting topics plus diagnostic counts at each
+     * stage. Doesn't touch cachedTopics / cachedStats — that's the caller's
+     * job (the scheduled run does; the preview endpoint doesn't).
+     */
+    public ComputeResult compute(List<Article> allArticles, TopicConfig cfg) {
+        ComputeStats stats = new ComputeStats();
+        stats.computedAt = Instant.now();
+        stats.totalArticles = allArticles.size();
+
+        // 24h window — articles without a known publish date can't honour
+        // the cutoff and are dropped (we can't tell if they're stale).
+        Instant cutoff = Instant.now().minus(Duration.ofHours(cfg.windowHours));
         List<Article> articles = allArticles.stream()
                 .filter(a -> a.publishedAt() != null && a.publishedAt().isAfter(cutoff))
                 .collect(Collectors.toList());
+        stats.articlesInWindow = articles.size();
+        stats.articlesBySource = articles.stream()
+                .filter(a -> a.source() != null)
+                .collect(Collectors.groupingBy(Article::source,
+                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
+
         if (articles.isEmpty()) {
-            log.info("No articles in the last 24h ({} total), skipping compute", allArticles.size());
-            return;
+            stats.droppedSingleSource = Collections.emptyList();
+            return new ComputeResult(Collections.emptyList(), stats);
         }
 
         int total = articles.size();
-        log.info("Computing trending topics from {} articles in the last 24h ({} total)", total, allArticles.size());
 
         // ── Step 1: Detect proper nouns via mid-sentence capitalisation in descriptions
-        // Descriptions are written in sentence-case, so only real proper nouns stay
-        // capitalised mid-sentence — unlike Title Case headlines where every word is capital.
         Map<String, int[]> pnStats = new HashMap<>();
         for (Article article : articles) {
             if (article.description() != null && article.description().length() > 30) {
-                collectDescriptionStats(article.description(), pnStats);
+                collectDescriptionStats(article.description(), pnStats, cfg);
             }
         }
-        Set<String> properNouns = resolveProperNouns(pnStats);
-        log.info("Proper-noun candidates ({}): {}…", properNouns.size(),
-            properNouns.stream().sorted().limit(40).collect(Collectors.toList()));
+        Set<String> properNouns = resolveProperNouns(pnStats, cfg);
+        stats.properNounCount = properNouns.size();
 
-        // ── Step 2: Extract n-grams with document frequency ─────────────────────
-        // Title and description are tokenised separately so n-grams never span the
-        // boundary between them (otherwise titles like "Inside Science: …" would
-        // produce phantom trigrams like "science inside science"). Title hits
-        // count toward an extra weight so headlines still outrank body copy.
+        // ── Step 2: Extract n-grams ─────────────────────────────────────────────
         Map<String, PhraseStats> phraseMap = new HashMap<>();
-
         for (int idx = 0; idx < articles.size(); idx++) {
             Article article = articles.get(idx);
-            extractNgrams(article.title(), idx, true, phraseMap);
-            extractNgrams(article.description(), idx, false, phraseMap);
+            extractNgrams(article.title(), idx, true, phraseMap, cfg);
+            extractNgrams(article.description(), idx, false, phraseMap, cfg);
         }
+        stats.rawPhrases = phraseMap.size();
 
-        // ── Step 3: Three-gate filter ────────────────────────────────────────────
-        double idfCutoff = total * IDF_MAX_RATIO;
-
+        // ── Step 3: Frequency / proper-noun / IDF gates ─────────────────────────
+        double idfCutoff = total * cfg.idfMaxRatio;
         phraseMap.entrySet().removeIf(e -> {
             String phrase = e.getKey();
             int freq = e.getValue().articles.size();
             String[] words = phrase.split(" ");
             int wc = words.length;
-
-            // Gate A — IDF: phrases in >25 % of all articles are too generic
             if (freq > idfCutoff) return true;
-
             if (wc == 1) {
-                // Gate B — Unigrams must be proper nouns AND not a generic place name.
-                // Generic places (Australia, France…) are context, not topics; they can
-                // still appear inside bigrams/trigrams so they're not in STOP_WORDS.
                 return !properNouns.contains(phrase)
-                    || freq < MIN_FREQ_UNIGRAM_PROPER
+                    || freq < cfg.minFreqUnigramProper
                     || GENERIC_PLACES.contains(phrase)
                     || FIRST_NAMES.contains(phrase);
             } else if (wc == 2) {
-                // Gate C — Bigrams need ≥1 proper noun, or high frequency
-                if (freq < MIN_FREQ_BIGRAM_PROPER) return true;
+                if (freq < cfg.minFreqBigramProper) return true;
                 boolean hasProper = properNouns.contains(words[0]) || properNouns.contains(words[1]);
-                return !hasProper && freq < MIN_FREQ_BIGRAM_GENERIC;
+                return !hasProper && freq < cfg.minFreqBigramGeneric;
             } else {
-                // Trigrams are specific enough; just enforce minimum frequency
-                return freq < MIN_FREQ_TRIGRAM;
+                return freq < cfg.minFreqTrigram;
             }
         });
+        stats.afterFrequencyGates = phraseMap.size();
 
-        // ── Step 4: Absorb shorter phrases subsumed by longer ones ───────────────
-        Map<String, PhraseStats> absorbed = absorbIntoMultiWord(phraseMap);
+        Map<String, PhraseStats> absorbed = absorbIntoMultiWord(phraseMap, cfg);
+        stats.afterAbsorb = absorbed.size();
 
-        // ── Step 5: Merge phrases that share ≥2 words (e.g. "Gaza Ceasefire Talks"
-        //            and "Gaza Ceasefire Deal" → keep the more frequent) ──────────
         Map<String, PhraseStats> merged = mergeByWordOverlap(absorbed);
+        stats.afterMerge = merged.size();
 
-        // ── Step 6: Deduplicate by proper noun — if the same proper noun drives
-        //            multiple topics (e.g. "Tulsi Gabbard" + "Tulsi Hearing"),
-        //            keep only the most frequent ──────────────────────────────────
         Map<String, PhraseStats> deduped = deduplicateByProperNoun(merged, properNouns);
+        stats.afterProperNounDedup = deduped.size();
 
-        // ── Step 7: Require coverage from ≥2 distinct sources ────────────────────
-        // A phrase that only one outlet is using isn't really "trending" — it's
-        // one newsroom's local interest. This kills single-source noise (e.g.
-        // BBC-only series titles, lifestyle columns) before the sort/limit.
-        Map<String, PhraseStats> multiSource = deduped.entrySet().stream()
-            .filter(e -> countSources(e.getValue(), articles) >= 2)
-            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                    (a, b) -> a, LinkedHashMap::new));
+        // Multi-source gate — keep dropped names for the stats page so the
+        // operator can see exactly what got cut as single-outlet noise.
+        List<String> dropped = new ArrayList<>();
+        Map<String, PhraseStats> multiSource = new LinkedHashMap<>();
+        for (Map.Entry<String, PhraseStats> e : deduped.entrySet()) {
+            if (countSources(e.getValue(), articles) >= cfg.minSources) {
+                multiSource.put(e.getKey(), e.getValue());
+            } else {
+                dropped.add(toTitleCase(e.getKey()));
+            }
+        }
+        stats.afterMultiSource = multiSource.size();
+        stats.droppedSingleSource = dropped.stream().limit(30).collect(Collectors.toList());
 
-        // ── Step 8: Build & sort ──────────────────────────────────────────────────
         List<TrendingTopic> topics = multiSource.entrySet().stream()
             .sorted((a, b) -> b.getValue().weight() - a.getValue().weight())
-            .limit(MAX_TOPICS)
+            .limit(cfg.maxTopics)
             .map(e -> {
                 String phrase = toTitleCase(e.getKey());
-                PhraseStats stats = e.getValue();
-                List<Article> topicArticles = stats.articles.stream()
+                PhraseStats st = e.getValue();
+                List<Article> topicArticles = st.articles.stream()
                     .sorted(Comparator.reverseOrder())
-                    .limit(MAX_ARTICLES_PER_TOPIC)
+                    .limit(cfg.maxArticlesPerTopic)
                     .map(articles::get)
                     .collect(Collectors.toList());
-                return new TrendingTopic(phrase, stats.articles.size(), topicArticles);
+                return new TrendingTopic(phrase, st.articles.size(), topicArticles);
             })
             .collect(Collectors.toList());
+        stats.finalTopics = topics.size();
 
-        cachedTopics = Collections.unmodifiableList(topics);
-        lastComputedAt = Instant.now();
-        log.info("Computed {} trending topics (highest → lowest):", topics.size());
-        for (int i = 0; i < topics.size(); i++) {
-            TrendingTopic t = topics.get(i);
-            log.info("  {}. {} ({})", i + 1, t.phrase(), t.frequency());
-        }
+        return new ComputeResult(topics, stats);
     }
 
     private void extractNgrams(String rawText, int idx, boolean fromTitle,
-                               Map<String, PhraseStats> phraseMap) {
+                               Map<String, PhraseStats> phraseMap, TopicConfig cfg) {
         if (rawText == null || rawText.isBlank()) return;
         Set<String> seen = new HashSet<>();
 
-        for (List<String> run : tokenizeIntoRuns(rawText)) {
+        for (List<String> run : tokenizeIntoRuns(rawText, cfg)) {
             for (int i = 0; i < run.size(); i++) {
                 String t0 = run.get(i);
                 if (seen.add(t0)) recordPhrase(phraseMap, t0, idx, fromTitle);
@@ -485,7 +513,7 @@ public class TrendingTopicsService {
      * the source — "Pacific and the Ocean" no longer collapses into the bigram
      * "pacific ocean".
      */
-    private List<List<String>> tokenizeIntoRuns(String rawText) {
+    private List<List<String>> tokenizeIntoRuns(String rawText, TopicConfig cfg) {
         String normalized = rawText
             .replaceAll("<[^>]*>", " ")
             .replaceAll("['‘’]s", "")
@@ -500,7 +528,7 @@ public class TrendingTopicsService {
             List<String> current = new ArrayList<>();
             for (String w : clause.split("\\s+")) {
                 if (w.isEmpty()) continue;
-                if (w.length() < MIN_WORD_LENGTH || STOP_WORDS.contains(w) || w.matches("\\d+.*")) {
+                if (w.length() < cfg.minWordLength || STOP_WORDS.contains(w) || w.matches("\\d+.*")) {
                     if (!current.isEmpty()) {
                         runs.add(current);
                         current = new ArrayList<>();
@@ -528,7 +556,7 @@ public class TrendingTopicsService {
      * In sentence-case prose only proper nouns keep their capital mid-sentence,
      * so capitalisation rate here is a reliable proper-noun signal.
      */
-    private void collectDescriptionStats(String description, Map<String, int[]> stats) {
+    private void collectDescriptionStats(String description, Map<String, int[]> stats, TopicConfig cfg) {
         String text = description
             .replaceAll("<[^>]*>", " ")
             .replaceAll("\\s+", " ")
@@ -541,7 +569,7 @@ public class TrendingTopicsService {
             String[] words = sentence.split("\\s+");
             for (int i = 1; i < words.length; i++) { // skip position 0 — sentence start
                 String raw = words[i].replaceAll("[^a-zA-Z]", "");
-                if (raw.length() < MIN_WORD_LENGTH) continue;
+                if (raw.length() < cfg.minWordLength) continue;
                 String lower = raw.toLowerCase();
                 if (STOP_WORDS.contains(lower)) continue;
                 if (lower.matches("\\d+.*")) continue;
@@ -553,11 +581,11 @@ public class TrendingTopicsService {
         }
     }
 
-    private Set<String> resolveProperNouns(Map<String, int[]> stats) {
+    private Set<String> resolveProperNouns(Map<String, int[]> stats, TopicConfig cfg) {
         Set<String> result = new HashSet<>();
         for (Map.Entry<String, int[]> e : stats.entrySet()) {
             int[] s = e.getValue();
-            if (s[1] >= PN_MIN_SAMPLES && (double) s[0] / s[1] >= PN_CAP_RATE) {
+            if (s[1] >= cfg.pnMinSamples && (double) s[0] / s[1] >= cfg.pnCapRate) {
                 result.add(e.getKey());
             }
         }
@@ -577,7 +605,7 @@ public class TrendingTopicsService {
         return sources.size();
     }
 
-    private Map<String, PhraseStats> absorbIntoMultiWord(Map<String, PhraseStats> phraseMap) {
+    private Map<String, PhraseStats> absorbIntoMultiWord(Map<String, PhraseStats> phraseMap, TopicConfig cfg) {
         List<String> phrases = new ArrayList<>(phraseMap.keySet());
         Set<String> toAbsorb = new HashSet<>();
 
@@ -612,7 +640,7 @@ public class TrendingTopicsService {
                     if (!isSubphrase(sw, lw)) continue;
 
                     int longerFreq = phraseMap.get(longer).articles.size();
-                    if ((double) longerFreq / shorterFreq >= MERGE_THRESHOLD) {
+                    if ((double) longerFreq / shorterFreq >= cfg.mergeThreshold) {
                         toAbsorb.add(shorter);
                         break;
                     }
@@ -747,7 +775,4 @@ public class TrendingTopicsService {
             .collect(Collectors.joining(" "));
     }
 
-    public List<TrendingTopic> getTrendingTopics() {
-        return cachedTopics; // sorted by frequency desc; frontend shuffles render order for variety
-    }
 }

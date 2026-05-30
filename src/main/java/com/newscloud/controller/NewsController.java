@@ -1,12 +1,13 @@
 package com.newscloud.controller;
 
+import com.newscloud.model.ComputeResult;
+import com.newscloud.model.ComputeStats;
+import com.newscloud.model.TopicConfig;
 import com.newscloud.model.TrendingTopic;
 import com.newscloud.service.NewsService;
 import com.newscloud.service.TrendingTopicsService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,5 +48,38 @@ public class NewsController {
         status.put("successfulFeeds", newsService.getSuccessfulFeeds());
         status.put("totalFeeds", newsService.getTotalFeeds());
         return status;
+    }
+
+    /**
+     * Diagnostic counts from the most recent compute run. Powers the stats
+     * page — shows where topics are getting dropped (frequency gates, IDF,
+     * single-source filter) so the operator can decide what to tune.
+     */
+    @GetMapping("/stats")
+    public ComputeStats getStats() {
+        ComputeStats s = trendingTopicsService.getCachedStats();
+        return s != null ? s : new ComputeStats();
+    }
+
+    @GetMapping("/config")
+    public TopicConfig getConfig() {
+        return trendingTopicsService.getActiveConfig();
+    }
+
+    /** Replace the active config; the next scheduled compute will use it. */
+    @PostMapping("/config")
+    public TopicConfig setConfig(@RequestBody TopicConfig cfg) {
+        trendingTopicsService.setActiveConfig(cfg);
+        return trendingTopicsService.getActiveConfig();
+    }
+
+    /**
+     * Compute the pipeline with the given overrides without committing them
+     * to the active config or the cached topic list. Returns both topics and
+     * stats so the settings page can render before/after diffs.
+     */
+    @PostMapping("/preview")
+    public ComputeResult preview(@RequestBody TopicConfig cfg) {
+        return trendingTopicsService.previewWithConfig(cfg);
     }
 }
